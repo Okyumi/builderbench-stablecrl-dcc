@@ -57,6 +57,14 @@ class CreativeCube():
         self._episode_length = config.episode_length
 
     @property
+    def mj_model(self) -> mujoco.MjModel:
+        return self._mj_model
+
+    @property
+    def spec(self) -> mujoco.MjSpec:
+        return self._spec
+
+    @property
     def dt(self) -> float:
         """Control timestep for the environment."""
         return self._ctrl_dt
@@ -95,12 +103,12 @@ class CreativeCube():
     def _init(self, xml_path, config):
 
         # prepare spec and add objects to the spec
-        spec = self._prepare_spec(xml_path)
+        spec = self._prepare_spec(xml_path, config)
         spec, self._object_names = self._add_objects(spec, config.num_cubes)
+        self._spec = spec
 
         # compile spec and create mujoco model and data
-        self._mj_model = spec.compile()
-        self._mj_model.opt.timestep = config.sim_dt        
+        self._mj_model = self._spec.compile()
         self._mjx_model = mjx.put_model(self._mj_model, impl=config.impl)
 
         # get dimensions
@@ -281,8 +289,10 @@ class CreativeCube():
 
         return spec, object_names
     
-    def _prepare_spec(self, xml_path):
+    def _prepare_spec(self, xml_path, config):
         spec = mujoco.MjSpec.from_file(str(xml_path))
+
+        spec.option.timestep = config.sim_dt
         
         spec.stat.center = np.array([0.4, 0.0 , 0.4])
         spec.stat.extent = 1.2
