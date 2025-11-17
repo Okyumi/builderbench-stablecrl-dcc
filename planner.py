@@ -156,8 +156,12 @@ def main():
     COMPLETION_THRESHOLD = 0.01 # How close to get to a setpoint (meters)
     # ---------------------
 
+    ctrl_dt = 0.02
+    sim_dt = model.opt.timestep
+    nstep = int(ctrl_dt / sim_dt)
+
     # Initialize the planner
-    planner = BlockPlanner(model, data, BLOCK_TO_MOVE, model.opt.timestep)
+    planner = BlockPlanner(model, data, BLOCK_TO_MOVE, ctrl_dt)
     
     # Get the block's starting position
     start_pos, _, _, _ = planner.get_state()
@@ -181,7 +185,7 @@ def main():
             planner.update_controls(current_setpoint, GOAL_YAW)
             
             # --- MuJoCo Step ---
-            mujoco.mj_step(model, data)
+            mujoco.mj_step(model, data, nstep=nstep)
             
             # --- Check if stage is complete ---
             current_pos, _, _, _ = planner.get_state()
