@@ -24,8 +24,9 @@ def default_config() -> config_dict.ConfigDict:
             xy_scale = 0.1,
             z_scale = 0.1,
             yaw_scale = 0.1,
-            select_scale = 2 * np.pi,
+            select_scale = np.pi,
             ),
+        delta_control=False,
         episode_length=150,
         task_id=0,
         reward_sensitivity=5.0,
@@ -180,6 +181,9 @@ class CreativeCube():
         self._workspace_bounds = jnp.array([ [-0.05, -0.35, 0.00], [ 0.45,  0.35, 0.5 ] ])
         self._target_sampling_bounds = jnp.array([ [0.22, -0.1, 0.02], [0.32, +0.1, 0.02] ])
         self._ctrl_bounds = jnp.array( self._mj_model.actuator_ctrlrange.T )
+        
+        self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
+        self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
         # get task data
         task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/cube-{config.num_cubes}.npz')
@@ -484,19 +488,29 @@ class CreativeCube():
         return termination, out_of_bounds
     
     def step(self, state, action):
-
-        selected_cube_idx = jnp.digitize( ( self._action_scale[-1] * state.info["select_action"] + jnp.pi ) % (2 * jnp.pi), bins = jnp.arange(1, self._config.num_cubes+1) * 2 * jnp.pi / ( self._config.num_cubes ) )
+        
+        selected_cube_idx = jnp.digitize( ( self._action_scale[-1] * state.info["select_action"] + jnp.pi ), bins = jnp.arange(1, self._config.num_cubes+1) * 2 * jnp.pi / ( self._config.num_cubes ) )
         state.info.update(
-            select_action = action[-1],
+            select_action = jnp.clip(action[-1], -1, 1),
         )
         new_ctrl = state.data.ctrl * 0
-        new_ctrl = (
-            new_ctrl            
-            .at[ self._objs_actuator_adr[selected_cube_idx] ] 
-            .set( action[:-1] * self._action_scale[:-1] + state.data.ctrl[ self._objs_actuator_adr[selected_cube_idx] ] )
-        )
-        new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
+
+        if self._config.delta_control:
+            new_ctrl = (
+                new_ctrl            
+                .at[ self._objs_actuator_adr[selected_cube_idx] ] 
+                .set( action[:-1] * self._action_scale[:-1] + state.data.ctrl[ self._objs_actuator_adr[selected_cube_idx] ] )
+            )
+            new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
         
+        else:
+            new_ctrl = (
+                new_ctrl            
+                .at[ self._objs_actuator_adr[selected_cube_idx] ] 
+                .set( action[:-1] * self._ctrl_halfspan[:4] + self._ctrl_median[:4] )
+            )
+            new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
+            
         data = mjx_step_data(self._mjx_model, state.data, new_ctrl, self.n_substeps)
         
         obs, info = self.get_obs(data, state.info)
