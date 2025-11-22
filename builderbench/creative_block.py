@@ -181,7 +181,6 @@ class CreativeCube():
         self._workspace_bounds = jnp.array([ [-0.05, -0.35, 0.00], [ 0.45,  0.35, 0.5 ] ])
         self._target_sampling_bounds = jnp.array([ [0.22, -0.1, 0.02], [0.32, +0.1, 0.02] ])
         self._ctrl_bounds = jnp.array( self._mj_model.actuator_ctrlrange.T )
-        
         self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
