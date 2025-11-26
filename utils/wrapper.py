@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import mujoco
 
 from flax import struct
@@ -41,13 +42,115 @@ class Wrapper():
         return getattr(self.env, name)
 
     @property
+    def dt(self) -> float:
+        """Control timestep for the environment."""
+        return self.env.dt
+
+    @property
+    def sim_dt(self) -> float:
+        """Simulation timestep for the environment."""
+        return self.env.sim_dt
+    
+    @property
+    def n_substeps(self) -> int:
+        """Number of sim steps per control step."""
+        return self.env.n_substeps
+
+    @property
+    def spec(self) -> mujoco.MjSpec:
+        return self.env.spec
+
+    @property
     def mj_model(self) -> mujoco.MjModel:
         return self.env.mj_model
-
+    
     @property
     def xml_path(self) -> str:
         return self.env.xml_path
+
+
+@jax.jit
+def get_yaw_from_quat(q):
+    w, x, y, z = q[0], q[1], q[2], q[3]
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = jnp.arctan2(siny_cosp, cosy_cosp)
+    return yaw
     
+class PDWrapper(Wrapper):
+    def __init__(self, env, duration: int = 1, kp_pos: float = 10.0, kd_pos: float = 2.0, kp_yaw: float = 10.0, kd_yaw: float = 0.5, delta_control: bool = False):
+        super().__init__(env)
+        
+        self._kp_pos = kp_pos
+        self._kd_pos = kd_pos
+        self._kp_yaw = kp_yaw
+        self._kd_yaw = kd_yaw
+        self._duration = duration
+        self._delta_control = delta_control
+        
+        # to do, port the following values from env config
+        self._cube_mass = 0.07936
+        self._gravity = 9.81
+        self._gravity_comp = self._cube_mass * self._gravity
+
+        self._workspace_median = (self.env._workspace_bounds[1] + self.env._workspace_bounds[0]) / 2
+        self._workspace_halfspan = (self.env._workspace_bounds[1] - self.env._workspace_bounds[0]) / 2
+
+        self._yaw_median = jnp.array( [0.0] )
+        self._yaw_halfspan = jnp.array( [np.pi / 2] )
+
+    def get_action(self, state, waypoint_pos, waypoint_yaw, cube_id):
+        current_pos = state.data.qpos[self.env._objs_qposadr[:, None] + np.arange(3)][cube_id]
+        current_quat = state.data.qpos[(self.env._objs_qposadr + 3)[:, None] + np.arange(4)][cube_id]
+        current_linvel = state.data.qvel[self.env._objs_qveladr[:, None] + np.arange(3)][cube_id]
+        current_angvel = state.data.qvel[(self.env._objs_qveladr + 3)[:, None] + np.arange(3)][cube_id]
+        
+        error_pos = waypoint_pos - current_pos
+        output_pos = (self._kp_pos * error_pos) + (self._kd_pos * - current_linvel)
+        output_pos = output_pos.at[2].add(self._gravity_comp)
+
+        current_yaw = get_yaw_from_quat(current_quat)
+        delta_yaw = waypoint_yaw - current_yaw
+        error_yaw = jnp.arctan2(jnp.sin(delta_yaw), jnp.cos(delta_yaw))        
+        output_yaw = (self._kp_yaw * error_yaw) + (self._kd_yaw * - current_angvel[-1])
+
+        raw_ctrl_action = jnp.concatenate([output_pos, output_yaw], axis=0)
+        ctrl_action = ( raw_ctrl_action - self.env._ctrl_median[:4] ) / self.env._ctrl_halfspan[:4]
+        
+        select_action = ( ( ( 2 * cube_id + 1) * jnp.pi / self.env._config.num_cubes ) - jnp.pi ) / ( jnp.pi )
+
+        action =  jnp.concatenate([ctrl_action, select_action[None]], axis=0)
+        action = jnp.clip(action, -1, 1)
+        return action
+    
+    def step(self, state, action):
+
+        state.info.update(
+            select_action = jnp.clip(action[-1], -1, 1),
+        )
+        cube_id = jnp.digitize( ( self.env._action_scale[-1] * action[-1] + jnp.pi ), bins = jnp.arange(1, self.env._config.num_cubes+1) * 2 * jnp.pi / ( self.env._config.num_cubes ) )
+
+        if self._delta_control:
+            raise NotImplementedError
+        else:
+            waypoint_pos = action[:3] * self._workspace_halfspan + self._workspace_median
+            waypoint_yaw = action[3] * self._yaw_halfspan + self._yaw_median
+
+        def f(carry, _):
+            state, prev_done = carry
+            action = self.get_action(state, waypoint_pos, waypoint_yaw, cube_id)
+            state = self.env.step(state, action)
+            done = jnp.maximum(state.done, prev_done)
+            
+            return (state, done), (state.reward, prev_done, state.metrics)
+        
+        (state, final_done), (rewards, dones, metrics) = jax.lax.scan(f, (state, state.done), (), self._duration)
+
+        state = state.replace(reward = jnp.sum(rewards * (1-dones)))
+        state = state.replace(metrics = jax.tree_util.tree_map(lambda m: jnp.sum( m * (1-dones) ), metrics))
+        state = state.replace(done = final_done)
+        return state
+
 class AutoResetWrapper(Wrapper):
     def reset(self, rng: jax.Array) -> State:
         state = self.env.reset(rng)
