@@ -185,7 +185,7 @@ class PlanarCube():
         x_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
         y_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
         yy, xx = jnp.meshgrid(y_vals, x_vals, indexing='ij')
-        self._grid_points = jnp.stack([yy.ravel(), xx.ravel()], axis=-1) * 0.04
+        self._grid_points = jnp.stack([yy.ravel(), xx.ravel()], axis=-1) * 0.042
 
     def _add_objects(self, spec, num_cubes, half_grid_size):
         object_names = []
@@ -283,21 +283,15 @@ class PlanarCube():
         object_pos = jax.random.choice(rng_starts, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)
         achieved_goal = object_pos.reshape(-1)
         object_pos = object_pos.reshape(-1)
-        object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1)).reshape(-1)
 
         target_object_pos = jax.random.choice(rng_target, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)        
-        target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self.num_cubes, 1))
+        target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1))
 
         # set initial object position
         init_q = (
             self._init_q            
             .at[self._objs_pos_qpos_idxs]
             .set(object_pos)
-        )
-        init_q = (
-            init_q              
-            .at[self._objs_quat_qpos_idxs]
-            .set(object_quat)
         )
 
         # set initial position and velocity of all joints and initial control of actuators
@@ -313,8 +307,8 @@ class PlanarCube():
 
         # set target mocap pos and quat
         data = data.replace(
-            mocap_pos=data.mocap_pos.at[self._task_mocap_targets, :].set(target_object_pos),
-            mocap_quat=data.mocap_quat.at[self._task_mocap_targets, :].set(target_object_quat),
+            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(target_object_pos),
+            mocap_quat=data.mocap_quat.at[self._mocap_targets].set(target_object_quat),
         )
 
         metrics = {
@@ -376,7 +370,7 @@ class PlanarCube():
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
 
         obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
         cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
@@ -403,7 +397,7 @@ class PlanarCube():
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
             
         obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
 
@@ -452,7 +446,7 @@ class PlanarCube():
             new_ctrl = (
                 new_ctrl            
                 .at[ self._objs_actuator_adr[selected_cube_idx] ] 
-                .set( action[:-1] * self._ctrl_halfspan[:4] + self._ctrl_median[:4] )
+                .set( action[:-1] * self._ctrl_halfspan[:2] + self._ctrl_median[:2] )
             )
             new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
             
@@ -486,7 +480,7 @@ class PlanarCube():
         def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
             d = mujoco.MjData(self._mj_model)
             d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos[self._task_mocap_targets], d.mocap_quat[self._task_mocap_targets] = mocap_pos.reshape(self._num_task_cubes, 3), mocap_quat.reshape(self._num_task_cubes, 4)
+            d.mocap_pos.at[self._mocap_targets], d.mocap_quat.at[self._mocap_targets] = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
             mujoco.mj_forward(self._mj_model, d)
             renderer.update_scene(d, camera=camera, scene_option=scene_option)
             return renderer.render()
@@ -508,7 +502,7 @@ class SparsePlanarCube(PlanarCube):
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
 
         obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
         cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
@@ -519,7 +513,7 @@ class SparsePlanarCube(PlanarCube):
         dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
         success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
         easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
-        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes
 
         reward_info = {
             "success": success,
@@ -536,7 +530,7 @@ class SparsePlanarCube(PlanarCube):
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
             
         obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
 
@@ -545,7 +539,7 @@ class SparsePlanarCube(PlanarCube):
         dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
         success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
         easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
-        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes
         
         reward_info = {
             "success": success,

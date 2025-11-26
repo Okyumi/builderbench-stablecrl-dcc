@@ -349,8 +349,8 @@ class CreativeCube():
 
         # set target mocap pos and quat
         data = data.replace(
-            mocap_pos=target_object_pos,
-            mocap_quat=target_object_quat,
+            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(target_object_pos),
+            mocap_quat=data.mocap_quat.at[self._mocap_targets].set(target_object_quat),
         )
 
         metrics = {
@@ -531,7 +531,7 @@ class CreativeCube():
         def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
             d = mujoco.MjData(self._mj_model)
             d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos, d.mocap_quat = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
+            d.mocap_pos.at[self._mocap_targets], d.mocap_quat.at[self._mocap_targets] = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
             mujoco.mj_forward(self._mj_model, d)
             renderer.update_scene(d, camera=camera, scene_option=scene_option)
             return renderer.render()
