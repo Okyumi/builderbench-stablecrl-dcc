@@ -187,6 +187,7 @@ class CreativeCube():
         # get task data
         task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/creative-{config.num_cubes}.npz')
         self._starts_data = jnp.array( task_data['starts'][config.task_id] )
+        self._target_goal_data = jnp.array( task_data['goals'][config.task_id] )
 
     def _add_objects(self, spec, num_cubes):
         object_names = []
