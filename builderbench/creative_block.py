@@ -549,3 +549,68 @@ class CreativeCube():
         renderer.close()
 
         return out
+
+class SparseCreativeCube(CreativeCube):
+    def __init__(
+        self,
+        config: config_dict.ConfigDict = default_config(),
+    ):
+        super().__init__(config=config)
+    
+    def get_permutation_invariant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
+        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+
+        obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
+        cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
+        obj_target_pos_err = jnp.sqrt( obj_target_pos_squared_pairwise_err[cube_ids, target_ids] )
+
+        obj_lifted = jnp.sum( obj_pos[:, 2] > 0.05 ).astype(float)
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+
+        dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "dense_reward": dense_reward,
+            "obj_lifted": obj_lifted,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info
+    
+    def get_permutation_variant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
+        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+            
+        obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
+
+        obj_lifted = jnp.sum( obj_pos[:, 2] > 0.05 ).astype(float)
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+
+        dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "dense_reward": dense_reward,
+            "obj_lifted": obj_lifted,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info

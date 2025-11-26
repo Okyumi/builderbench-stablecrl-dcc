@@ -18,22 +18,29 @@ _MJX_PARAMS = {
 
     'creative-1-task1': [16, 84],
     'creative-1-task2': [16, 84],
+    'sparse-creative-1-task1': [16, 84],
+    'sparse-creative-1-task2': [16, 84],
 
     'creative-2-task1': [16, 128],
+    'sparse-creative-2-task1': [16, 128],
 
     'creative-3-task1': [24, 144],
+    'sparse-creative-3-task1': [24, 144],
 
     'creative-4-task1': [24, 256],
-    'creative-4-task2': [24, 256],
+    'sparse-creative-4-task1': [24, 256],
 
     'creative-5-task1': [24, 400],
-    'creative-5-task2': [24, 400],
+    'sparse-creative-5-task1': [24, 400],
 
     'creative-6-task1': [24, 576],
+    'sparse-creative-6-task1': [24, 576],
 
     'creative-7-task1': [32, 784],
+    'sparse-creative-7-task1': [32, 784],
 
     'creative-8-task1': [36, 1024],
+    'sparse-creative-8-task1': [36, 1024],
 }
 
 _TIME_STEPS = {
@@ -41,46 +48,83 @@ _TIME_STEPS = {
 
     'creative-1-task1': [0.005, 0.02],
     'creative-1-task2': [0.005, 0.02],
+    'sparse-creative-1-task1': [0.005, 0.02],
+    'sparse-creative-1-task2': [0.005, 0.02],
 
     'creative-2-task1': [0.005, 0.02],
     'creative-2-task2': [0.005, 0.02],
     'creative-2-task3': [0.005, 0.02],
     'creative-2-task4': [0.005, 0.02],
     'creative-2-task5': [0.005, 0.02],
-    
+    'sparse-creative-2-task1': [0.005, 0.02],
+    'sparse-creative-2-task2': [0.005, 0.02],
+    'sparse-creative-2-task3': [0.005, 0.02],
+    'sparse-creative-2-task4': [0.005, 0.02],
+    'sparse-creative-2-task5': [0.005, 0.02],
+
     'creative-3-task1': [0.005, 0.02],
     'creative-3-task2': [0.005, 0.02],
     'creative-3-task3': [0.005, 0.02],
     'creative-3-task4': [0.005, 0.02],
     'creative-3-task5': [0.005, 0.02],
-    
+    'sparse-creative-3-task1': [0.005, 0.02],
+    'sparse-creative-3-task2': [0.005, 0.02],
+    'sparse-creative-3-task3': [0.005, 0.02],
+    'sparse-creative-3-task4': [0.005, 0.02],
+    'sparse-creative-3-task5': [0.005, 0.02],
+
     'creative-4-task1': [0.005, 0.02],
     'creative-4-task2': [0.005, 0.02],
     'creative-4-task3': [0.005, 0.02],
     'creative-4-task4': [0.005, 0.02],
     'creative-4-task5': [0.005, 0.02],
+    'sparse-creative-4-task1': [0.005, 0.02],
+    'sparse-creative-4-task2': [0.005, 0.02],
+    'sparse-creative-4-task3': [0.005, 0.02],
+    'sparse-creative-4-task4': [0.005, 0.02],
+    'sparse-creative-4-task5': [0.005, 0.02],
 
     'creative-5-task1': [0.005, 0.02],
     'creative-5-task2': [0.005, 0.02],
     'creative-5-task3': [0.005, 0.02],
     'creative-5-task4': [0.005, 0.02],
     'creative-5-task5': [0.005, 0.02],
+    'sparse-creative-5-task1': [0.005, 0.02],
+    'sparse-creative-5-task2': [0.005, 0.02],
+    'sparse-creative-5-task3': [0.005, 0.02],
+    'sparse-creative-5-task4': [0.005, 0.02],
+    'sparse-creative-5-task5': [0.005, 0.02],
 
     'creative-6-task1': [0.005, 0.02],
     'creative-6-task2': [0.005, 0.02],
     'creative-6-task3': [0.005, 0.02],
     'creative-6-task4': [0.005, 0.02],
     'creative-6-task5': [0.005, 0.02],
+    'sparse-creative-6-task1': [0.005, 0.02],
+    'sparse-creative-6-task2': [0.005, 0.02],
+    'sparse-creative-6-task3': [0.005, 0.02],
+    'sparse-creative-6-task4': [0.005, 0.02],
+    'sparse-creative-6-task5': [0.005, 0.02],
 
     'creative-7-task1': [0.005, 0.02],
     'creative-7-task2': [0.005, 0.02],
     'creative-7-task3': [0.005, 0.02],
     'creative-7-task4': [0.005, 0.02],
     'creative-7-task5': [0.005, 0.02],
+    'sparse-creative-7-task1': [0.005, 0.02],
+    'sparse-creative-7-task2': [0.005, 0.02],
+    'sparse-creative-7-task3': [0.005, 0.02],
+    'sparse-creative-7-task4': [0.005, 0.02],
+    'sparse-creative-7-task5': [0.005, 0.02],
 
     'creative-8-task1': [0.005, 0.02],
     'creative-8-task2': [0.005, 0.02],
     'creative-8-task3': [0.005, 0.02],
     'creative-8-task4': [0.005, 0.02],
     'creative-8-task5': [0.005, 0.02],
-    }
+    'sparse-creative-8-task1': [0.005, 0.02],
+    'sparse-creative-8-task2': [0.005, 0.02],
+    'sparse-creative-8-task3': [0.005, 0.02],
+    'sparse-creative-8-task4': [0.005, 0.02],
+    'sparse-creative-8-task5': [0.005, 0.02],
+}

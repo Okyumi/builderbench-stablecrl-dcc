@@ -65,24 +65,35 @@ def mjx_step_data(
 
 
 def make_env(args):
-    # Initialize environment
-    if re.fullmatch(r"creative-\d+-task\d+", args.env_id):
-        num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
-        task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
+	# Initialize environment
+	if re.fullmatch(r"creative-\d+-task\d+", args.env_id):
+		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
+		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
 
-        from builderbench.creative_block import CreativeCube, default_config
-        env_class = CreativeCube
-        default_config = default_config()
-        default_config.num_cubes = num_cubes
-        default_config.task_id = task_id
-        episode_length = 100 + num_cubes * 50
+		from builderbench.creative_block import CreativeCube, default_config
+		env_class = CreativeCube
+		default_config = default_config()
+		default_config.num_cubes = num_cubes
+		default_config.task_id = task_id
+		episode_length = 100 + num_cubes * 50
 
-    else:
-        raise ValueError(f"Environment {args.env_id} not supported")
+	elif re.fullmatch(r"sparse-creative-\d+-task\d+", args.env_id):
+		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
+		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
 
-    default_config.episode_length = args.env_episode_length if args.env_episode_length is not None else episode_length
-    default_config.sim_dt, default_config.ctrl_dt = _TIME_STEPS[args.env_id]
-    default_config.env_early_termination = args.env_early_termination
-    default_config.permutation_invariant_reward = args.permutation_invariant_reward
-    default_config.nconmax, default_config.njmax = _MJX_PARAMS[args.env_id][0] * args.num_envs, _MJX_PARAMS[args.env_id][1] 
-    return env_class, default_config
+		from builderbench.creative_block import SparseCreativeCube, default_config
+		env_class = SparseCreativeCube
+		default_config = default_config()
+		default_config.num_cubes = num_cubes
+		default_config.task_id = task_id
+		episode_length = 100 + num_cubes * 100
+
+	else:
+		raise ValueError(f"Environment {args.env_id} not supported")
+
+	default_config.episode_length = args.env_episode_length if args.env_episode_length is not None else episode_length
+	default_config.sim_dt, default_config.ctrl_dt = _TIME_STEPS[args.env_id]
+	default_config.env_early_termination = args.env_early_termination
+	default_config.permutation_invariant_reward = args.permutation_invariant_reward
+	default_config.nconmax, default_config.njmax = _MJX_PARAMS[args.env_id][0] * args.num_envs, _MJX_PARAMS[args.env_id][1] 
+	return env_class, default_config
