@@ -20,6 +20,7 @@ def default_config() -> config_dict.ConfigDict:
         nconmax=16 * 1024, 
         njmax=32,
         num_cubes=1,
+        halfgrid_size=3 * 0.042,
         action_scale = config_dict.create(
             xy_scale = 0.1,
             yaw_scale = 0.1,
@@ -82,7 +83,7 @@ class PlanarCube():
     @property
     def action_size(self):
         """Size of the action space."""
-        return 5
+        return 3
     
     @property
     def observation_size(self):
@@ -104,7 +105,7 @@ class PlanarCube():
 
         # prepare spec and add objects to the spec
         spec = self._prepare_spec(xml_path, config)
-        spec, self._object_names = self._add_objects(spec, config.num_cubes)
+        spec, self._object_names = self._add_objects(spec, config.num_cubes, config.halfgrid_size)
         self._spec = spec
 
         # compile spec and create mujoco model and data
@@ -144,15 +145,11 @@ class PlanarCube():
             for obj_name in self._object_names
         ])
 
-        # # get object pos and quat indices in qpos
-        # self._objs_pos_qpos_idxs = np.concatenate([
-        #     obj_adr + np.arange(3)
-        #     for obj_adr in self._objs_qposadr
-        # ])
-        # self._objs_quat_qpos_idxs = np.concatenate([
-        #     obj_adr + 3 + np.arange(4)
-        #     for obj_adr in self._objs_qposadr
-        # ])
+        # get object pos and quat indices in qpos
+        self._objs_pos_qpos_idxs = np.concatenate([
+            obj_adr + np.arange(2)
+            for obj_adr in self._objs_qposadr
+        ])
 
         # get start indices in actuators
         self._objs_actuator_adr = np.stack([
@@ -166,9 +163,8 @@ class PlanarCube():
 
         # get constants
         _data = mujoco.MjData(self._mj_model)
-        _data.ctrl = np.array([0, 0, 0, 0] * config.num_cubes)
+        _data.ctrl = np.array([0, 0] * config.num_cubes)
 
-        # get constants
         self._init_q = jnp.array(_data.qpos, dtype=jnp.float32)
         self._init_v = jnp.array(_data.qvel, dtype=jnp.float32) * 0
         self._init_ctrl = jnp.array(_data.ctrl, dtype=jnp.float32)
@@ -176,23 +172,27 @@ class PlanarCube():
         # set action scale
         self._action_scale =  np.array([config.action_scale.xy_scale]*2 + [config.action_scale.select_scale])
 
-        # set bounds       
-        self._workspace_bounds = jnp.array([ [ -0.12, -0.12, 0.03 ], [ 0.12, 0.12, 0.05 ] ])
-        self._target_sampling_bounds = jnp.array([ [ -0.1, -0.1, 0.0 ], [ 0.1, 0.1, 0.0 ] ])
+        # set bounds
+        self._workspace_bounds = jnp.array([ [ -config.halfgrid_size-0.02, -config.halfgrid_size-0.02, 0.03 ], [ config.halfgrid_size, config.halfgrid_size, 0.05 ] ])
+        self._target_sampling_bounds = jnp.array([ [ -config.halfgrid_size, -config.halfgrid_size, 0.04 ], [ config.halfgrid_size, config.halfgrid_size, 0.04 ] ])
         self._ctrl_bounds = jnp.array( self._mj_model.actuator_ctrlrange.T )
         self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
-        # get task data
-        task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/creative-{config.num_cubes}.npz')
-        self._starts_data = jnp.array( task_data['starts'][config.task_id] )
+        # calculate grid
+        assert config.halfgrid_size % 0.042 == 0, "halfgrid_size must be multiple of 0.042"
+        halfgrid_size = (config.halfgrid_size / 0.042)
+        x_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
+        y_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
+        yy, xx = jnp.meshgrid(y_vals, x_vals, indexing='ij')
+        self._grid_points = jnp.stack([yy.ravel(), xx.ravel()], axis=-1) * 0.04
 
-    def _add_objects(self, spec, num_cubes):
+    def _add_objects(self, spec, num_cubes, half_grid_size):
         object_names = []
         for i in range(num_cubes):
 
             # stacked placement
-            x = 0.1
+            x = 0.0
             y = (0.06 * i)
             z = 0.04
 
@@ -203,15 +203,17 @@ class PlanarCube():
 
             body.add_joint(
                 name=f"x_block_joint_{i}",
-                type=mujoco.mjtJoint.mjJNT_FREE,
+                type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(1, 0, 0),
-                range=(-0.1, 0.1),
+                range=(-half_grid_size, half_grid_size),
+                damping=0.5,
             )
             body.add_joint(
                 name=f"y_block_joint_{i}",
-                type=mujoco.mjtJoint.mjJNT_FREE,
+                type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(0, 1, 0),
-                range=(-0.1, 0.1),
+                range=(-half_grid_size, half_grid_size),
+                damping=0.5,
             )
 
             body.add_geom(
@@ -230,7 +232,6 @@ class PlanarCube():
                 name=f"x_block_{i}",
                 target=f"x_block_joint_{i}",
                 trntype=mujoco.mjtTrn.mjTRN_JOINT,
-                gear=[1, 0, 0, 0, 0, 0],
                 ctrllimited=True,
                 ctrlrange=(-0.1, 0.1),
             )
@@ -240,7 +241,6 @@ class PlanarCube():
                 name=f"y_block_{i}",
                 target=f"y_block_joint_{i}",
                 trntype=mujoco.mjtTrn.mjTRN_JOINT,
-                gear=[0, 1, 0, 0, 0, 0],
                 ctrllimited=True,
                 ctrlrange=(-0.1, 0.1),
             )
@@ -251,7 +251,6 @@ class PlanarCube():
                 name=f"target_mocap_{i}",
                 mocap=True,
                 pos=[x, y, z],
-                quat=quat,   
             )
             body.add_geom(
                 name=f"target_mocap_{i}",
@@ -277,3 +276,283 @@ class PlanarCube():
         spec.visual.global_.azimuth = 180
 
         return spec
+    
+    def reset(self, rng: jax.Array):
+        rng, rng_box, rng_target, rng_starts, rng_select_action = jax.random.split(rng, 5)
+
+        object_pos = jax.random.choice(rng_starts, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)
+        achieved_goal = object_pos.reshape(-1)
+        object_pos = object_pos.reshape(-1)
+        object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1)).reshape(-1)
+
+        target_object_pos = jax.random.choice(rng_target, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)        
+        target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self.num_cubes, 1))
+
+        # set initial object position
+        init_q = (
+            self._init_q            
+            .at[self._objs_pos_qpos_idxs]
+            .set(object_pos)
+        )
+        init_q = (
+            init_q              
+            .at[self._objs_quat_qpos_idxs]
+            .set(object_quat)
+        )
+
+        # set initial position and velocity of all joints and initial control of actuators
+        data = mjx_make_data(
+            self._mj_model,
+            qpos=init_q,
+            qvel=self._init_v,
+            ctrl=self._init_ctrl,
+            impl=self._mjx_model.impl.value,
+            nconmax=self._config.nconmax,
+            njmax=self._config.njmax,
+        )
+
+        # set target mocap pos and quat
+        data = data.replace(
+            mocap_pos=data.mocap_pos.at[self._task_mocap_targets, :].set(target_object_pos),
+            mocap_quat=data.mocap_quat.at[self._task_mocap_targets, :].set(target_object_quat),
+        )
+
+        metrics = {
+            "easy_success": jnp.array(0.0, dtype=float),
+            "success": jnp.array(0.0, dtype=float),
+            "out_of_bounds": jnp.array(0.0, dtype=float),
+            "obj_moved": jnp.array(0.0, dtype=float),
+            "obj_goal_dist": jnp.array(0.0, dtype=float),
+        }
+        info = {
+            "rng": rng, 
+            "select_action": jax.random.uniform(rng_select_action, minval=-1, maxval=1),
+            "achieved_goal": achieved_goal,
+            "target_goal": target_object_pos.reshape(-1),
+            "target_mocap_pos": target_object_pos,
+            "target_mocap_quat": target_object_quat,
+        }
+
+        # calculate observation
+        obs = self.get_obs(data, info)[0]
+        
+        # initial rewards and done
+        if self._config.permutation_invariant_reward:
+            reward, reward_info = self.get_permutation_invariant_reward_from_obs(data, info)
+        else:
+            reward, reward_info = self.get_permutation_variant_reward_from_obs(data, info)
+        done, out_of_bounds = self.get_termination(data)
+        metrics.update(
+            out_of_bounds=out_of_bounds.astype(float), 
+            **reward_info,
+        )
+    
+        state = State(data, obs, reward, done, metrics, info)
+        return state
+
+    def get_obs(self, data, info):
+
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+        achieved_goal = obj_pos.reshape(-1,)
+        obj_pos = obj_pos.reshape(-1,)
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
+
+        select_action = info["select_action"]
+
+        obs = jnp.concatenate([
+            obj_pos,
+            obj_linvel,
+            select_action[None],
+        ])
+
+        info.update({
+            "achieved_goal": achieved_goal, 
+        })
+
+        return obs, info
+    
+    def get_permutation_invariant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+        achieved_goal = obj_pos
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+
+        obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
+        cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
+        obj_target_pos_err = jnp.sqrt( obj_target_pos_squared_pairwise_err[cube_ids, target_ids] )
+
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+        
+        reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err))
+
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info
+    
+    def get_permutation_variant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+        achieved_goal = obj_pos
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+            
+        obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
+
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+        
+        reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err))
+
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info
+
+    def get_termination(self, data):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+
+        out_of_bounds = 1 - ( jnp.all((obj_pos >= self._workspace_bounds[0][:2]) & jnp.all(obj_pos <= self._workspace_bounds[1][:2])) )
+        termination = out_of_bounds | jnp.isnan(data.qpos).any() | jnp.isnan(data.qvel).any()
+        termination = ( termination * self._config.env_early_termination ).astype(float)
+        termination = termination.astype(float)
+        return termination, out_of_bounds
+    
+    def step(self, state, action):
+        
+        selected_cube_idx = jnp.digitize( ( self._action_scale[-1] * state.info["select_action"] + jnp.pi ), bins = jnp.arange(1, self._config.num_cubes+1) * 2 * jnp.pi / ( self._config.num_cubes ) )
+        state.info.update(
+            select_action = jnp.clip(action[-1], -1, 1),
+        )
+        new_ctrl = state.data.ctrl * 0
+
+        if self._config.delta_control:
+            new_ctrl = (
+                new_ctrl            
+                .at[ self._objs_actuator_adr[selected_cube_idx] ] 
+                .set( action[:-1] * self._action_scale[:-1] + state.data.ctrl[ self._objs_actuator_adr[selected_cube_idx] ] )
+            )
+            new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
+        
+        else:
+            new_ctrl = (
+                new_ctrl            
+                .at[ self._objs_actuator_adr[selected_cube_idx] ] 
+                .set( action[:-1] * self._ctrl_halfspan[:4] + self._ctrl_median[:4] )
+            )
+            new_ctrl = jnp.clip(new_ctrl, self._ctrl_bounds[0], self._ctrl_bounds[1])
+            
+        data = mjx_step_data(self._mjx_model, state.data, new_ctrl, self.n_substeps)
+        
+        obs, info = self.get_obs(data, state.info)
+        if self._config.permutation_invariant_reward:
+            reward, reward_info = self.get_permutation_invariant_reward_from_obs(data, info)
+        else:
+            reward, reward_info = self.get_permutation_variant_reward_from_obs(data, info)
+
+        done, out_of_bounds = self.get_termination(data)
+        state.metrics.update(
+            out_of_bounds=out_of_bounds.astype(float), 
+            **reward_info,
+        )
+        
+        state = State(data, obs, reward, done, state.metrics, state.info)
+        return state
+        
+    def render_from_info(
+        self,
+        qpos, qvel, mocap_pos, mocap_quat,
+        height: int = 480,
+        width: int = 640,
+        camera: Optional[str] = None,
+        scene_option: Optional[mujoco.MjvOption] = None,
+    ):
+        renderer = mujoco.Renderer(self._mj_model, height=height, width=width)
+        camera = camera or -1
+        def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
+            d = mujoco.MjData(self._mj_model)
+            d.qpos, d.qvel = qpos, qvel
+            d.mocap_pos[self._task_mocap_targets], d.mocap_quat[self._task_mocap_targets] = mocap_pos.reshape(self._num_task_cubes, 3), mocap_quat.reshape(self._num_task_cubes, 4)
+            mujoco.mj_forward(self._mj_model, d)
+            renderer.update_scene(d, camera=camera, scene_option=scene_option)
+            return renderer.render()
+
+        out = get_image(qpos, qvel, mocap_pos, mocap_quat)
+        renderer.close()
+
+        return out
+    
+class SparsePlanarCube(PlanarCube):
+    def __init__(
+        self,
+        config: config_dict.ConfigDict = default_config(),
+    ):
+        super().__init__(config=config)
+    
+    def get_permutation_invariant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+        achieved_goal = obj_pos
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+
+        obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
+        cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
+        obj_target_pos_err = jnp.sqrt( obj_target_pos_squared_pairwise_err[cube_ids, target_ids] )
+
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+
+        dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "dense_reward": dense_reward,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info
+    
+    def get_permutation_variant_reward_from_obs(self, data, info):
+        obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
+        achieved_goal = obj_pos
+        obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(2)].reshape(-1,)
+
+        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+            
+        obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
+
+        obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
+
+        dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
+        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
+        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        
+        reward_info = {
+            "success": success,
+            "easy_success":  easy_success,
+            "dense_reward": dense_reward,
+            "obj_moved": obj_moved,
+            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+        }
+
+        return reward, reward_info
