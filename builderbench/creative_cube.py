@@ -321,7 +321,7 @@ class CreativeCube():
             )
         )
         target_object_pos = ( target_pos + self._target_goal_data )
-        target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._num_task_cubes, 1))
+        target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1))
 
         # set initial object position
         init_q = (
@@ -348,8 +348,8 @@ class CreativeCube():
 
         # set target mocap pos and quat
         data = data.replace(
-            mocap_pos=data.mocap_pos.at[self._task_mocap_targets, :].set(target_object_pos),
-            mocap_quat=data.mocap_quat.at[self._task_mocap_targets, :].set(target_object_quat),
+            mocap_pos=target_object_pos,
+            mocap_quat=target_object_quat,
         )
 
         metrics = {
@@ -416,7 +416,7 @@ class CreativeCube():
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
 
         obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
         cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
@@ -445,7 +445,7 @@ class CreativeCube():
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
             
         obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
 
@@ -530,7 +530,7 @@ class CreativeCube():
         def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
             d = mujoco.MjData(self._mj_model)
             d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos[self._task_mocap_targets], d.mocap_quat[self._task_mocap_targets] = mocap_pos.reshape(self._num_task_cubes, 3), mocap_quat.reshape(self._num_task_cubes, 4)
+            d.mocap_pos, d.mocap_quat = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
             mujoco.mj_forward(self._mj_model, d)
             renderer.update_scene(d, camera=camera, scene_option=scene_option)
             return renderer.render()
@@ -552,7 +552,7 @@ class SparseCreativeCube(CreativeCube):
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
 
         obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
         cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
@@ -564,7 +564,7 @@ class SparseCreativeCube(CreativeCube):
         dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
         success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
         easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
-        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes
 
         reward_info = {
             "success": success,
@@ -582,7 +582,7 @@ class SparseCreativeCube(CreativeCube):
         achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
-        target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
+        target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
             
         obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
 
@@ -592,7 +592,7 @@ class SparseCreativeCube(CreativeCube):
         dense_reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err)).astype(float)
         success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
         easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
-        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._num_task_cubes
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes
         
         reward_info = {
             "success": success,
