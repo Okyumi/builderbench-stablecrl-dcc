@@ -185,17 +185,8 @@ class CreativeCube():
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
         # get task data
-        task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/cube-{config.num_cubes}.npz')
+        task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/creative-{config.num_cubes}.npz')
         self._starts_data = jnp.array( task_data['starts'][config.task_id] )
-        self._target_cube_masks_data = jnp.array( task_data['masks'][config.task_id] )
-        self._target_goal_data = jnp.array( task_data['goals'][config.task_id][ self._target_cube_masks_data ] )
-        self._num_task_cubes = np.sum(self._target_cube_masks_data)
-
-        # task relevant mocap target ids
-        self._task_mocap_targets = self._mocap_targets[ self._target_cube_masks_data ]
-
-        # make non-target cubes invisible
-        self._mj_model.geom_rgba[ self._mocap_targets_geom[ ~task_data['masks'][config.task_id] ], -1] *= 0
 
     def _add_objects(self, spec, num_cubes):
         object_names = []
@@ -317,7 +308,7 @@ class CreativeCube():
                 maxval=_starts_data[:, 1],
             )
         )
-        achieved_goal = object_pos[ self._target_cube_masks_data ].reshape(-1)
+        achieved_goal = object_pos.reshape(-1)
         object_pos = object_pos.reshape(-1)
         object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1)).reshape(-1)
 
@@ -374,7 +365,6 @@ class CreativeCube():
             "select_action": jax.random.uniform(rng_select_action, minval=-1, maxval=1),
             "achieved_goal": achieved_goal,
             "target_goal": target_object_pos.reshape(-1),
-            "target_mask": self._target_cube_masks_data,
             "target_mocap_pos": target_object_pos,
             "target_mocap_quat": target_object_quat,
         }
@@ -399,7 +389,7 @@ class CreativeCube():
     def get_obs(self, data, info):
 
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
-        achieved_goal = obj_pos[ self._target_cube_masks_data ].reshape(-1,)
+        achieved_goal = obj_pos.reshape(-1,)
         obj_pos = obj_pos.reshape(-1,)
         obj_quat = data.qpos[(self._objs_qposadr + 3)[:, None] + np.arange(4)].reshape(-1,)
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
@@ -423,7 +413,7 @@ class CreativeCube():
     
     def get_permutation_invariant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
-        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
         target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
@@ -452,7 +442,7 @@ class CreativeCube():
 
     def get_permutation_variant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
-        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
         target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
@@ -559,7 +549,7 @@ class SparseCreativeCube(CreativeCube):
     
     def get_permutation_invariant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
-        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
         target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))
@@ -589,7 +579,7 @@ class SparseCreativeCube(CreativeCube):
     
     def get_permutation_variant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
-        achieved_goal = obj_pos[ self._target_cube_masks_data ]
+        achieved_goal = obj_pos
         obj_linvel = data.qvel[self._objs_qveladr[:, None] + np.arange(3)].reshape(-1,)
 
         target_goal = info["target_goal"].reshape((self._num_task_cubes, -1))

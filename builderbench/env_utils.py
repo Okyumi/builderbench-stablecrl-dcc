@@ -70,7 +70,7 @@ def make_env(args):
 		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
 		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
 
-		from builderbench.creative_block import CreativeCube, default_config
+		from builderbench.creative_cube import CreativeCube, default_config
 		env_class = CreativeCube
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
@@ -81,7 +81,7 @@ def make_env(args):
 		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
 		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
 
-		from builderbench.creative_block import SparseCreativeCube, default_config
+		from builderbench.creative_cube import SparseCreativeCube, default_config
 		env_class = SparseCreativeCube
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
