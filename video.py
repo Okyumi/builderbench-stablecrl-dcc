@@ -58,13 +58,11 @@ def main(args: Args):
         raise NotImplementedError
 
     folder_path = Path(args.folder_path)
-
-    
     for subfolder in Path(folder_path).iterdir():
         if subfolder.is_dir() and args.env_id in subfolder.name and AGENT in subfolder.name:
-            
-            if subfolder.name.startswith(args.wandb_name_tag):
-                
+
+            if subfolder.name.startswith(f'{args.wandb_name_tag}__{args.env_id}__{args.seed}'):
+
                 print(f"\nSubfolder: {subfolder}")
 
                 video_path = f"{folder_path.parent}/videos/{subfolder.name}/"
