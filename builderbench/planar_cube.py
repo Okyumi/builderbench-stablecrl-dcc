@@ -20,7 +20,7 @@ def default_config() -> config_dict.ConfigDict:
         nconmax=16 * 1024, 
         njmax=32,
         num_cubes=1,
-        halfgrid_size=3 * 0.042,
+        halfgrid_size=3,
         action_scale = config_dict.create(
             xy_scale = 0.1,
             yaw_scale = 0.1,
@@ -28,7 +28,6 @@ def default_config() -> config_dict.ConfigDict:
             ),
         delta_control=False,
         episode_length=150,
-        task_id=0,
         reward_sensitivity=5.0,
         success_threshold=0.02,
         easy_success_threshold=0.05,
@@ -102,10 +101,13 @@ class PlanarCube():
         return self
 
     def _init(self, xml_path, config):
+        
+        # preprocess config
+        scaled_halfgrid = config.halfgrid_size * 0.042  # convert to meters
 
         # prepare spec and add objects to the spec
         spec = self._prepare_spec(xml_path, config)
-        spec, self._object_names = self._add_objects(spec, config.num_cubes, config.halfgrid_size)
+        spec, self._object_names = self._add_objects(spec, config.num_cubes, scaled_halfgrid)
         self._spec = spec
 
         # compile spec and create mujoco model and data
@@ -173,17 +175,15 @@ class PlanarCube():
         self._action_scale =  np.array([config.action_scale.xy_scale]*2 + [config.action_scale.select_scale])
 
         # set bounds
-        self._workspace_bounds = jnp.array([ [ -config.halfgrid_size-0.02, -config.halfgrid_size-0.02, 0.03 ], [ config.halfgrid_size, config.halfgrid_size, 0.05 ] ])
-        self._target_sampling_bounds = jnp.array([ [ -config.halfgrid_size, -config.halfgrid_size, 0.04 ], [ config.halfgrid_size, config.halfgrid_size, 0.04 ] ])
+        self._workspace_bounds = jnp.array([ [ -scaled_halfgrid-0.02, -scaled_halfgrid-0.02, 0.03 ], [ scaled_halfgrid, scaled_halfgrid, 0.05 ] ])
+        self._target_sampling_bounds = jnp.array([ [ -scaled_halfgrid, -scaled_halfgrid, 0.04 ], [ scaled_halfgrid, scaled_halfgrid, 0.04 ] ])
         self._ctrl_bounds = jnp.array( self._mj_model.actuator_ctrlrange.T )
         self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
         # calculate grid
-        assert config.halfgrid_size % 0.042 == 0, "halfgrid_size must be multiple of 0.042"
-        halfgrid_size = (config.halfgrid_size / 0.042)
-        x_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
-        y_vals = jnp.arange(-halfgrid_size, halfgrid_size) + 0.5
+        x_vals = jnp.arange(-config.halfgrid_size, config.halfgrid_size) + 0.5
+        y_vals = jnp.arange(-config.halfgrid_size, config.halfgrid_size) + 0.5
         yy, xx = jnp.meshgrid(y_vals, x_vals, indexing='ij')
         self._grid_points = jnp.stack([yy.ravel(), xx.ravel()], axis=-1) * 0.042
 
@@ -191,9 +191,11 @@ class PlanarCube():
         object_names = []
         for i in range(num_cubes):
 
-            # stacked placement
+            # placement
+            # this placement is important to ensure that the range of all cubes is the same. 
+            # For some reason, the range of body joints are defined relative to the initial position of the body.
             x = 0.0
-            y = (0.06 * i)
+            y = 0.0
             z = 0.04
 
             body = spec.worldbody.add_body(
@@ -480,7 +482,7 @@ class PlanarCube():
         def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
             d = mujoco.MjData(self._mj_model)
             d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos.at[self._mocap_targets], d.mocap_quat.at[self._mocap_targets] = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
+            d.mocap_pos[self._mocap_targets], d.mocap_quat[self._mocap_targets] = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
             mujoco.mj_forward(self._mj_model, d)
             renderer.update_scene(d, camera=camera, scene_option=scene_option)
             return renderer.render()

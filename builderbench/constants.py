@@ -15,7 +15,8 @@ _CUSTOM_COLORS = [
 
 _MJX_PARAMS = {
     # env_name : [nconmax, njmax]
-
+    
+    # creative tasks
     'creative-1-task1': [16, 84],
     'creative-1-task2': [16, 84],
     'sparse-creative-1-task1': [16, 84],
@@ -46,6 +47,7 @@ _MJX_PARAMS = {
 _TIME_STEPS = {
     # env_name : [sim_dt, ctrl_dt]
 
+    # creative tasks
     'creative-1-task1': [0.005, 0.02],
     'creative-1-task2': [0.005, 0.02],
     'sparse-creative-1-task1': [0.005, 0.02],
@@ -71,4 +73,31 @@ _TIME_STEPS = {
 
     'creative-8-task1': [0.005, 0.02],
     'sparse-creative-8-task1': [0.005, 0.02],
+
+    # planar tasks
+    'planar-1-task1': [0.005, 0.02],
+    'planar-1-task2': [0.005, 0.02],
+    'sparse-planar-1-task1': [0.005, 0.02],
+    'sparse-planar-1-task2': [0.005, 0.02],
+
+    'planar-2-task1': [0.005, 0.02],
+    'sparse-planar-2-task1': [0.005, 0.02],
+
+    'planar-3-task1': [0.005, 0.02],
+    'sparse-planar-3-task1': [0.005, 0.02],
+
+    'planar-4-task1': [0.005, 0.02],
+    'sparse-planar-4-task1': [0.005, 0.02],
+
+    'planar-5-task1': [0.005, 0.02],
+    'sparse-planar-5-task1': [0.005, 0.02],
+
+    'planar-6-task1': [0.005, 0.02],
+    'sparse-planar-6-task1': [0.005, 0.02],
+
+    'planar-7-task1': [0.005, 0.02],
+    'sparse-planar-7-task1': [0.005, 0.02],
+
+    'planar-8-task1': [0.005, 0.02],
+    'sparse-planar-8-task1': [0.005, 0.02],
 }
