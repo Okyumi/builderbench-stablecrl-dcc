@@ -81,6 +81,8 @@ class Args:
     clipping_epsilon: float = 0.3
     normalize_advantage: bool = True
 
+    diagnostic: bool = False
+
 @flax.struct.dataclass
 class PPOTrainingState(TrainState):
   """Contains training state for the learner."""
@@ -679,9 +681,12 @@ def main(args: Args):
                 * args.num_envs * args.rollout_length
             ) / training_step_time
 
-            key_extra_log, key = jax.random.split(key, 2)
-            extra_metrics = extra_log_step(training_state, training_data, key_extra_log)
-            jax.tree_util.tree_map(lambda x: x.block_until_ready(), extra_metrics)
+            if args.diagnostic:
+                key_extra_log, key = jax.random.split(key, 2)
+                extra_metrics = extra_log_step(training_state, training_data, key_extra_log)
+                jax.tree_util.tree_map(lambda x: x.block_until_ready(), extra_metrics)
+            else:
+                extra_metrics = {}
 
             metrics = {
                 'training/sps': sps,

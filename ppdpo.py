@@ -77,6 +77,8 @@ class Args:
     clipping_epsilon: float = 0.3
     normalize_advantage: bool = True
 
+    diagnostic: bool = False
+
     duration: int = 25
 
 @flax.struct.dataclass
@@ -615,9 +617,12 @@ def main(args: Args):
                 * args.num_envs * args.rollout_length
             ) / training_step_time
 
-            key_extra_log, key = jax.random.split(key, 2)
-            # extra_metrics = extra_log_step(training_state, training_data, key_extra_log)
-            # jax.tree_util.tree_map(lambda x: x.block_until_ready(), extra_metrics)
+            if args.diagnostic:
+                key_extra_log, key = jax.random.split(key, 2)
+                extra_metrics = extra_log_step(training_state, training_data, key_extra_log)
+                jax.tree_util.tree_map(lambda x: x.block_until_ready(), extra_metrics)
+            else:
+                extra_metrics = {}
 
             metrics = {
                 'training/sps': sps,
@@ -630,7 +635,7 @@ def main(args: Args):
                 'normalizer/summer_variance' : jnp.mean( training_state.normalizer_params.summed_variance ),
                 'normalizer/std' : jnp.mean( training_state.normalizer_params.std ),
                 **{f'training/{name}': value for name, value in metrics.items()},
-                # **{f'diagnostic/{name}': value for name, value in extra_metrics.items()},
+                **{f'diagnostic/{name}': value for name, value in extra_metrics.items()},
             }
 
             metrics = evaluator.run_evaluation(
