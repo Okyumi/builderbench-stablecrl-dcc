@@ -290,7 +290,7 @@ class CreativeCube():
         spec.option.timestep = config.sim_dt
         
         spec.stat.center = np.array([0.4, 0.0 , 0.4])
-        spec.stat.extent = 1.2
+        spec.stat.extent = 0.8
         spec.visual.global_.elevation = -30.0
         spec.visual.global_.azimuth = 180
 

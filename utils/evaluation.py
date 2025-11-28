@@ -150,11 +150,6 @@ class Evaluator:
     
 def get_video(env_id, inference_policy, video_env, video_key, episode_length):
 
-    camera = mujoco.MjvCamera()
-    camera.distance = 0.8
-    camera.lookat = np.array([0.4, 0.0 , 0.4])
-    camera.elevation = -30.0
-    camera.azimuth = 180
 
     video_env_states = get_trajectory(inference_policy, video_env, video_key, episode_length)
     
@@ -171,6 +166,5 @@ def get_video(env_id, inference_policy, video_env, video_key, episode_length):
                 video_env_states.data.qvel[i][0], 
                 video_env_states.info[f'{mocap_key}_pos'][i][0],
                 video_env_states.info[f'{mocap_key}_quat'][i][0],
-                camera=camera,
             ))
     return video_images
