@@ -61,7 +61,9 @@ def main(args: Args):
     for subfolder in Path(folder_path).iterdir():
         if subfolder.is_dir() and args.env_id in subfolder.name and AGENT in subfolder.name:
 
-            if subfolder.name.startswith(f'{args.wandb_name_tag}__{args.env_id}__{args.seed}'):
+            # print(f"\nSubfolder: {subfolder.name} and {args.wandb_name_tag}__{args.env_id}__{args.seed}")
+
+            if subfolder.name.startswith(f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}"):
 
                 print(f"\nSubfolder: {subfolder}")
 
