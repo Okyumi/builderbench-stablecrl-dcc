@@ -42,6 +42,28 @@ _MJX_PARAMS = {
 
     'creative-8-task1': [36, 1024],
     'sparse-creative-8-task1': [36, 1024],
+
+    'planar-3-cube-1': [16, 84],
+    'planar-3-cube-2': [16, 128],
+    'planar-3-cube-3': [24, 144],
+    'planar-3-cube-4': [24, 256],
+    'planar-3-cube-5': [24, 576],
+    'sparse-planar-3-cube-1': [16, 84],
+    'sparse-planar-3-cube-2': [16, 128],
+    'sparse-planar-3-cube-3': [24, 144],
+    'sparse-planar-3-cube-4': [24, 256],
+    'sparse-planar-3-cube-5': [24, 576],
+
+    'planar-4-cube-1': [16, 84],
+    'planar-4-cube-2': [16, 128],
+    'planar-4-cube-3': [24, 144],
+    'planar-4-cube-4': [24, 256],
+    'planar-4-cube-5': [24, 576],
+    'sparse-planar-4-cube-1': [16, 84],
+    'sparse-planar-4-cube-2': [16, 128],
+    'sparse-planar-4-cube-3': [24, 144],
+    'sparse-planar-4-cube-4': [24, 256],
+    'sparse-planar-4-cube-5': [24, 576],
 }
 
 _TIME_STEPS = {
@@ -75,29 +97,25 @@ _TIME_STEPS = {
     'sparse-creative-8-task1': [0.005, 0.02],
 
     # planar tasks
-    'planar-1-task1': [0.005, 0.02],
-    'planar-1-task2': [0.005, 0.02],
-    'sparse-planar-1-task1': [0.005, 0.02],
-    'sparse-planar-1-task2': [0.005, 0.02],
+    'planar-3-cube-1': [0.005, 0.02],
+    'planar-3-cube-2': [0.005, 0.02],
+    'planar-3-cube-3': [0.005, 0.02],
+    'planar-3-cube-4': [0.005, 0.02],
+    'planar-3-cube-5': [0.005, 0.02],
+    'sparse-planar-3-cube-1': [0.005, 0.02],
+    'sparse-planar-3-cube-2': [0.005, 0.02],
+    'sparse-planar-3-cube-3': [0.005, 0.02],
+    'sparse-planar-3-cube-4': [0.005, 0.02],
+    'sparse-planar-3-cube-5': [0.005, 0.02],
 
-    'planar-2-task1': [0.005, 0.02],
-    'sparse-planar-2-task1': [0.005, 0.02],
-
-    'planar-3-task1': [0.005, 0.02],
-    'sparse-planar-3-task1': [0.005, 0.02],
-
-    'planar-4-task1': [0.005, 0.02],
-    'sparse-planar-4-task1': [0.005, 0.02],
-
-    'planar-5-task1': [0.005, 0.02],
-    'sparse-planar-5-task1': [0.005, 0.02],
-
-    'planar-6-task1': [0.005, 0.02],
-    'sparse-planar-6-task1': [0.005, 0.02],
-
-    'planar-7-task1': [0.005, 0.02],
-    'sparse-planar-7-task1': [0.005, 0.02],
-
-    'planar-8-task1': [0.005, 0.02],
-    'sparse-planar-8-task1': [0.005, 0.02],
+    'planar-4-cube-1': [0.005, 0.02],
+    'planar-4-cube-2': [0.005, 0.02],
+    'planar-4-cube-3': [0.005, 0.02],
+    'planar-4-cube-4': [0.005, 0.02],
+    'planar-4-cube-5': [0.005, 0.02],
+    'sparse-planar-4-cube-1': [0.005, 0.02],
+    'sparse-planar-4-cube-2': [0.005, 0.02],
+    'sparse-planar-4-cube-3': [0.005, 0.02],
+    'sparse-planar-4-cube-4': [0.005, 0.02],
+    'sparse-planar-4-cube-5': [0.005, 0.02],
 }

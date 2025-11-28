@@ -99,7 +99,7 @@ def make_env(args):
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
 		default_config.halfgrid_size = halfgrid_size
-		episode_length = 40 * num_cubes * halfgrid_size
+		episode_length = 25 * num_cubes * halfgrid_size
 
 	elif re.fullmatch(r"sparse-planar-\d+-cube-\d+", args.env_id):
 		halfgrid_size = int( re.search(r"planar-(\d+)", args.env_id).group(1))
@@ -112,7 +112,7 @@ def make_env(args):
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
 		default_config.halfgrid_size = halfgrid_size
-		episode_length = 40 * num_cubes * halfgrid_size
+		episode_length = 25 * num_cubes * halfgrid_size
 
 	else:
 		raise ValueError(f"Environment {args.env_id} not supported")

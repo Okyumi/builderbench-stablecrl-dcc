@@ -103,11 +103,11 @@ class PlanarCube():
     def _init(self, xml_path, config):
         
         # preprocess config
-        scaled_halfgrid = config.halfgrid_size * 0.042  # convert to meters
+        config.scaled_halfgrid = config.halfgrid_size * 0.042  # convert to meters
 
         # prepare spec and add objects to the spec
         spec = self._prepare_spec(xml_path, config)
-        spec, self._object_names = self._add_objects(spec, config.num_cubes, scaled_halfgrid)
+        spec, self._object_names = self._add_objects(spec, config.num_cubes, config.scaled_halfgrid)
         self._spec = spec
 
         # compile spec and create mujoco model and data
@@ -175,8 +175,8 @@ class PlanarCube():
         self._action_scale =  np.array([config.action_scale.xy_scale]*2 + [config.action_scale.select_scale])
 
         # set bounds
-        self._workspace_bounds = jnp.array([ [ -scaled_halfgrid-0.02, -scaled_halfgrid-0.02, 0.03 ], [ scaled_halfgrid, scaled_halfgrid, 0.05 ] ])
-        self._target_sampling_bounds = jnp.array([ [ -scaled_halfgrid, -scaled_halfgrid, 0.04 ], [ scaled_halfgrid, scaled_halfgrid, 0.04 ] ])
+        self._workspace_bounds = jnp.array([ [ -config.scaled_halfgrid-0.02, -config.scaled_halfgrid-0.02, 0.03 ], [ config.scaled_halfgrid, config.scaled_halfgrid, 0.05 ] ])
+        self._target_sampling_bounds = jnp.array([ [ -config.scaled_halfgrid, -config.scaled_halfgrid, 0.04 ], [ config.scaled_halfgrid, config.scaled_halfgrid, 0.04 ] ])
         self._ctrl_bounds = jnp.array( self._mj_model.actuator_ctrlrange.T )
         self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
@@ -208,14 +208,14 @@ class PlanarCube():
                 type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(1, 0, 0),
                 range=(-half_grid_size, half_grid_size),
-                damping=0.5,
+                damping=0.1,
             )
             body.add_joint(
                 name=f"y_block_joint_{i}",
                 type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(0, 1, 0),
                 range=(-half_grid_size, half_grid_size),
-                damping=0.5,
+                damping=0.1,
             )
 
             body.add_geom(
@@ -272,10 +272,31 @@ class PlanarCube():
 
         spec.option.timestep = config.sim_dt
         
-        spec.stat.center = np.array([0.4, 0.0 , 0.4])
-        spec.stat.extent = 1.2
-        spec.visual.global_.elevation = -30.0
+        spec.stat.center = np.array([0.0, 0.0 , 0.0])
+        spec.stat.extent = 0.8
+        spec.visual.global_.elevation = -45.0
         spec.visual.global_.azimuth = 180
+        
+        limit = config.scaled_halfgrid + 0.02
+        thickness = 0.005 
+        length = limit + thickness 
+        color = [0.8, 0.3, 0.3, 0.4]         
+        def add_visual_geom(name, pos, size):
+            spec.worldbody.add_geom(
+                name=name,
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                pos=pos,
+                size=size,
+                rgba=color,
+                contype=0,
+                conaffinity=0,
+                group=1,
+            )
+
+        add_visual_geom("border_top", [0, limit, 0.001], [length, thickness, 0.001])        
+        add_visual_geom("border_bottom", [0, -limit, 0.001], [length, thickness, 0.001])        
+        add_visual_geom("border_right", [limit, 0, 0.001], [thickness, length, 0.001])
+        add_visual_geom("border_left", [-limit, 0, 0.001], [thickness, length, 0.001])
 
         return spec
     
@@ -309,7 +330,7 @@ class PlanarCube():
 
         # set target mocap pos and quat
         data = data.replace(
-            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(target_object_pos),
+            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(jnp.concatenate([target_object_pos, jnp.array([[0.04]]*self._config.num_cubes)], axis=-1)),
             mocap_quat=data.mocap_quat.at[self._mocap_targets].set(target_object_quat),
         )
 
@@ -482,7 +503,9 @@ class PlanarCube():
         def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
             d = mujoco.MjData(self._mj_model)
             d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos[self._mocap_targets], d.mocap_quat[self._mocap_targets] = mocap_pos.reshape(self._config.num_cubes, 3), mocap_quat.reshape(self._config.num_cubes, 4)
+            d.mocap_pos[self._mocap_targets, :2] = mocap_pos.reshape(self._config.num_cubes, 2)
+            d.mocap_pos[self._mocap_targets, -1] = 0.04
+            d.mocap_quat[self._mocap_targets] = mocap_quat.reshape(self._config.num_cubes, 4)
             mujoco.mj_forward(self._mj_model, d)
             renderer.update_scene(d, camera=camera, scene_option=scene_option)
             return renderer.render()
