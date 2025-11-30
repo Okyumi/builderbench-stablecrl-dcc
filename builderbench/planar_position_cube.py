@@ -22,10 +22,10 @@ def default_config() -> config_dict.ConfigDict:
         num_cubes=1,
         halfgrid_size=3,
         action_scale = config_dict.create(
-            xy_scale = 0.1,
+            xy_scale = 0.01,
             select_scale = np.pi,
             ),
-        delta_control=False,
+        delta_control=True,     # direct position control would be too aggressive
         episode_length=150,
         reward_sensitivity=5.0,
         success_threshold=0.02,
@@ -36,7 +36,7 @@ def default_config() -> config_dict.ConfigDict:
     )
     return config
 
-class PlanarCube():
+class PlanarPositionCube():
     def __init__(
         self,
         config: config_dict.ConfigDict = default_config(),
@@ -202,19 +202,23 @@ class PlanarCube():
                 pos=[x, y, z], 
             )
 
+            mass = (0.04 ** 3) * 1240
+            stiffness = 300.0
+            damping = 2 * np.sqrt(mass * stiffness)
+
             body.add_joint(
                 name=f"x_block_joint_{i}",
                 type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(1, 0, 0),
                 range=(-half_grid_size, half_grid_size),
-                damping=0.1,
+                damping=damping,
             )
             body.add_joint(
                 name=f"y_block_joint_{i}",
                 type=mujoco.mjtJoint.mjJNT_SLIDE,
                 axis=(0, 1, 0),
                 range=(-half_grid_size, half_grid_size),
-                damping=0.1,
+                damping=damping,
             )
 
             body.add_geom(
@@ -234,18 +238,18 @@ class PlanarCube():
                 target=f"x_block_joint_{i}",
                 trntype=mujoco.mjtTrn.mjTRN_JOINT,
                 ctrllimited=True,
-                ctrlrange=(-0.1, 0.1),
+                ctrlrange=(-half_grid_size, half_grid_size), # Range matches workspace
             )
-            actuator_x.set_to_motor()
+            actuator_x.set_to_position(kp=stiffness)
 
             actuator_y = spec.add_actuator(
                 name=f"y_block_{i}",
                 target=f"y_block_joint_{i}",
                 trntype=mujoco.mjtTrn.mjTRN_JOINT,
                 ctrllimited=True,
-                ctrlrange=(-0.1, 0.1),
+                ctrlrange=(-half_grid_size, half_grid_size), # Range matches workspace
             )
-            actuator_y.set_to_motor()
+            actuator_y.set_to_position(kp=stiffness)
 
             # adding target position for cube
             body = spec.worldbody.add_body(
@@ -488,33 +492,8 @@ class PlanarCube():
         
         state = State(data, obs, reward, done, state.metrics, state.info)
         return state
-        
-    def render_from_info(
-        self,
-        qpos, qvel, mocap_pos, mocap_quat,
-        height: int = 480,
-        width: int = 640,
-        camera: Optional[str] = None,
-        scene_option: Optional[mujoco.MjvOption] = None,
-    ):
-        renderer = mujoco.Renderer(self._mj_model, height=height, width=width)
-        camera = camera or -1
-        def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
-            d = mujoco.MjData(self._mj_model)
-            d.qpos, d.qvel = qpos, qvel
-            d.mocap_pos[self._mocap_targets, :2] = mocap_pos.reshape(self._config.num_cubes, 2)
-            d.mocap_pos[self._mocap_targets, -1] = 0.04
-            d.mocap_quat[self._mocap_targets] = mocap_quat.reshape(self._config.num_cubes, 4)
-            mujoco.mj_forward(self._mj_model, d)
-            renderer.update_scene(d, camera=camera, scene_option=scene_option)
-            return renderer.render()
-
-        out = get_image(qpos, qvel, mocap_pos, mocap_quat)
-        renderer.close()
-
-        return out
-    
-class SparsePlanarCube(PlanarCube):
+            
+class SparsePlanarPositionCube(PlanarPositionCube):
     def __init__(
         self,
         config: config_dict.ConfigDict = default_config(),
