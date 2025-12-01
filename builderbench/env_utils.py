@@ -125,7 +125,20 @@ def make_env(args):
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
 		default_config.halfgrid_size = halfgrid_size
-		episode_length = 25 * num_cubes * halfgrid_size
+		episode_length = 15 * ( num_cubes + 1) * halfgrid_size
+	
+	elif re.fullmatch(r"sparse-planar-position-\d+-cube-\d+", args.env_id):
+		halfgrid_size = int( re.search(r"planar-position-(\d+)", args.env_id).group(1))
+		num_cubes = int( re.search(r"cube-(\d+)", args.env_id).group(1))
+
+		assert num_cubes <= (2 * halfgrid_size) **2, "Number of cubes exceeds grid capacity"
+
+		from builderbench.planar_position_cube import SparsePlanarPositionCube, default_config
+		env_class = SparsePlanarPositionCube
+		default_config = default_config()
+		default_config.num_cubes = num_cubes
+		default_config.halfgrid_size = halfgrid_size
+		episode_length = 15 * ( num_cubes ) * halfgrid_size
 
 	else:
 		raise ValueError(f"Environment {args.env_id} not supported")

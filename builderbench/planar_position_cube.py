@@ -310,7 +310,7 @@ class PlanarPositionCube():
         achieved_goal = object_pos.reshape(-1)
         object_pos = object_pos.reshape(-1)
 
-        target_object_pos = jax.random.choice(rng_target, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)        
+        target_object_pos = jax.random.choice(rng_target, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)   
         target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1))
 
         # set initial object position
@@ -325,7 +325,7 @@ class PlanarPositionCube():
             self._mj_model,
             qpos=init_q,
             qvel=self._init_v,
-            ctrl=self._init_ctrl,
+            ctrl=object_pos,
             impl=self._mjx_model.impl.value,
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,
@@ -382,6 +382,7 @@ class PlanarPositionCube():
         obs = jnp.concatenate([
             obj_pos,
             obj_linvel,
+            data.ctrl,
             select_action[None],
         ])
 
@@ -458,7 +459,7 @@ class PlanarPositionCube():
         state.info.update(
             select_action = jnp.clip(action[-1], -1, 1),
         )
-        new_ctrl = state.data.ctrl * 0
+        new_ctrl = state.data.ctrl
 
         if self._config.delta_control:
             new_ctrl = (
@@ -492,6 +493,31 @@ class PlanarPositionCube():
         
         state = State(data, obs, reward, done, state.metrics, state.info)
         return state
+    
+    def render_from_info(
+        self,
+        qpos, qvel, mocap_pos, mocap_quat,
+        height: int = 480,
+        width: int = 640,
+        camera: Optional[str] = None,
+        scene_option: Optional[mujoco.MjvOption] = None,
+    ):
+        renderer = mujoco.Renderer(self._mj_model, height=height, width=width)
+        camera = camera or -1
+        def get_image(qpos, qvel, mocap_pos, mocap_quat) -> np.ndarray:
+            d = mujoco.MjData(self._mj_model)
+            d.qpos, d.qvel = qpos, qvel
+            d.mocap_pos[self._mocap_targets, :2] = mocap_pos.reshape(self._config.num_cubes, 2)
+            d.mocap_pos[self._mocap_targets, -1] = 0.04
+            d.mocap_quat[self._mocap_targets] = mocap_quat.reshape(self._config.num_cubes, 4)
+            mujoco.mj_forward(self._mj_model, d)
+            renderer.update_scene(d, camera=camera, scene_option=scene_option)
+            return renderer.render()
+
+        out = get_image(qpos, qvel, mocap_pos, mocap_quat)
+        renderer.close()
+
+        return out
             
 class SparsePlanarPositionCube(PlanarPositionCube):
     def __init__(
