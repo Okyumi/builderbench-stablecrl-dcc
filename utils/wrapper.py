@@ -158,7 +158,14 @@ class AutoResetWrapper(Wrapper):
         state.info['first_obs'] = state.obs
         state.info['first_reward'] = state.reward
         state.info['first_metrics'] = state.metrics
-        state.info['first_select_action'] = state.info['select_action']
+        self._select_action_exist = False
+        if 'select_action' in state.info:
+            state.info['first_select_action'] = state.info['select_action']
+            self._select_action_exist = True
+        self._active_cube_id_exist = False
+        if 'active_cube_id' in state.info:
+            state.info['first_active_cube_id'] = state.info['active_cube_id']
+            self._active_cube_id_exist = True
         state.info['first_achieved_goal'] = state.info['achieved_goal']
         state.info["traj_id"] = jnp.zeros(rng.shape[:-1])
 
@@ -187,7 +194,10 @@ class AutoResetWrapper(Wrapper):
         metrics = jax.tree.map(where_done, state.info['first_metrics'], state.metrics)
 
         state.info['achieved_goal'] = jax.tree.map(where_done, state.info['first_achieved_goal'], state.info['achieved_goal'])
-        state.info['select_action'] = jax.tree.map(where_done, state.info['first_select_action'], state.info['select_action'])
+        if self._select_action_exist:
+            state.info['select_action'] = jax.tree.map(where_done, state.info['first_select_action'], state.info['select_action'])
+        if self._active_cube_id_exist:
+            state.info['active_cube_id'] = jax.tree.map(where_done, state.info['first_active_cube_id'], state.info['active_cube_id'])
         state.info['traj_id'] = jnp.where(state.done, state.info['traj_id'] + 1, state.info['traj_id'])
 
         return state.replace(data=data, obs=obs, reward=reward, metrics=metrics, info=state.info)

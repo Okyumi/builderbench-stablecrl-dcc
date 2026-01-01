@@ -13,6 +13,7 @@ _CUSTOM_COLORS = [
     np.array([0.44, 0.50, 0.56, 1.0]),  # slate gray
 ]
 
+# Todo : find a more efficient way to store and access these parameters
 _MJX_PARAMS = {
     # env_name : [nconmax, njmax]
     
@@ -44,27 +45,6 @@ _MJX_PARAMS = {
     'sparse-creative-8-task1': [36, 1024],
 
     # planar tasks
-    'planar-3-cube-1': [16, 84],
-    'planar-3-cube-2': [16, 128],
-    'planar-3-cube-3': [24, 144],
-    'planar-3-cube-4': [24, 256],
-    'planar-3-cube-5': [24, 576],
-    'sparse-planar-3-cube-1': [16, 84],
-    'sparse-planar-3-cube-2': [16, 128],
-    'sparse-planar-3-cube-3': [24, 144],
-    'sparse-planar-3-cube-4': [24, 256],
-    'sparse-planar-3-cube-5': [24, 576],
-    'planar-position-3-cube-1': [16, 84],
-    'planar-position-3-cube-2': [16, 128],
-    'planar-position-3-cube-3': [24, 144],
-    'planar-position-3-cube-4': [24, 256],
-    'planar-position-3-cube-5': [24, 576],
-    'sparse-planar-position-3-cube-1': [16, 84],
-    'sparse-planar-position-3-cube-2': [16, 128],
-    'sparse-planar-position-3-cube-3': [24, 144],
-    'sparse-planar-position-3-cube-4': [24, 256],
-    'sparse-planar-position-3-cube-5': [24, 576],
-
     'planar-4-cube-1': [16, 84],
     'planar-4-cube-2': [16, 128],
     'planar-4-cube-3': [24, 144],
@@ -85,6 +65,27 @@ _MJX_PARAMS = {
     'sparse-planar-position-4-cube-3': [24, 144],
     'sparse-planar-position-4-cube-4': [24, 256],
     'sparse-planar-position-4-cube-5': [24, 576],
+
+    'discrete-planar-4-cube-1': [16, 84],
+    'discrete-planar-4-cube-2': [16, 128],
+    'discrete-planar-4-cube-3': [24, 144],
+    'discrete-planar-4-cube-4': [24, 256],
+    'discrete-planar-4-cube-5': [24, 576],
+    'sparse-discrete-planar-4-cube-1': [16, 84],
+    'sparse-discrete-planar-4-cube-2': [16, 128],
+    'sparse-discrete-planar-4-cube-3': [24, 144],
+    'sparse-discrete-planar-4-cube-4': [24, 256],
+    'sparse-discrete-planar-4-cube-5': [24, 576],
+    'discrete-planar-position-4-cube-1': [16, 84],
+    'discrete-planar-position-4-cube-2': [16, 128],
+    'discrete-planar-position-4-cube-3': [24, 144],
+    'discrete-planar-position-4-cube-4': [24, 256],
+    'discrete-planar-position-4-cube-5': [24, 576],
+    'sparse-discrete-planar-position-4-cube-1': [16, 84],
+    'sparse-discrete-planar-position-4-cube-2': [16, 128],
+    'sparse-discrete-planar-position-4-cube-3': [24, 144],
+    'sparse-discrete-planar-position-4-cube-4': [24, 256],
+    'sparse-discrete-planar-position-4-cube-5': [24, 576],
 
 }
 
@@ -119,27 +120,6 @@ _TIME_STEPS = {
     'sparse-creative-8-task1': [0.005, 0.02],
 
     # planar tasks
-    'planar-3-cube-1': [0.005, 0.02],
-    'planar-3-cube-2': [0.005, 0.02],
-    'planar-3-cube-3': [0.005, 0.02],
-    'planar-3-cube-4': [0.005, 0.02],
-    'planar-3-cube-5': [0.005, 0.02],
-    'sparse-planar-3-cube-1': [0.005, 0.02],
-    'sparse-planar-3-cube-2': [0.005, 0.02],
-    'sparse-planar-3-cube-3': [0.005, 0.02],
-    'sparse-planar-3-cube-4': [0.005, 0.02],
-    'sparse-planar-3-cube-5': [0.005, 0.02],
-    'planar-position-3-cube-1': [0.005, 0.02],
-    'planar-position-3-cube-2': [0.005, 0.02],
-    'planar-position-3-cube-3': [0.005, 0.02],
-    'planar-position-3-cube-4': [0.005, 0.02],
-    'planar-position-3-cube-5': [0.005, 0.02],
-    'sparse-planar-position-3-cube-1': [0.005, 0.02],
-    'sparse-planar-position-3-cube-2': [0.005, 0.02],
-    'sparse-planar-position-3-cube-3': [0.005, 0.02],
-    'sparse-planar-position-3-cube-4': [0.005, 0.02],
-    'sparse-planar-position-3-cube-5': [0.005, 0.02],
-
     'planar-4-cube-1': [0.005, 0.02],
     'planar-4-cube-2': [0.005, 0.02],
     'planar-4-cube-3': [0.005, 0.02],
@@ -160,4 +140,25 @@ _TIME_STEPS = {
     'sparse-planar-position-4-cube-3': [0.005, 0.02],
     'sparse-planar-position-4-cube-4': [0.005, 0.02],
     'sparse-planar-position-4-cube-5': [0.005, 0.02],
+
+    'discrete-planar-4-cube-1': [0.005, 0.02],
+    'discrete-planar-4-cube-2': [0.005, 0.02],
+    'discrete-planar-4-cube-3': [0.005, 0.02],
+    'discrete-planar-4-cube-4': [0.005, 0.02],
+    'discrete-planar-4-cube-5': [0.005, 0.02],
+    'sparse-discrete-planar-4-cube-1': [0.005, 0.02],
+    'sparse-discrete-planar-4-cube-2': [0.005, 0.02],
+    'sparse-discrete-planar-4-cube-3': [0.005, 0.02],
+    'sparse-discrete-planar-4-cube-4': [0.005, 0.02],
+    'sparse-discrete-planar-4-cube-5': [0.005, 0.02],
+    'discrete-planar-position-4-cube-1': [0.005, 0.02],
+    'discrete-planar-position-4-cube-2': [0.005, 0.02],
+    'discrete-planar-position-4-cube-3': [0.005, 0.02],
+    'discrete-planar-position-4-cube-4': [0.005, 0.02],
+    'discrete-planar-position-4-cube-5': [0.005, 0.02],
+    'sparse-discrete-planar-position-4-cube-1': [0.005, 0.02],
+    'sparse-discrete-planar-position-4-cube-2': [0.005, 0.02],
+    'sparse-discrete-planar-position-4-cube-3': [0.005, 0.02],
+    'sparse-discrete-planar-position-4-cube-4': [0.005, 0.02],
+    'sparse-discrete-planar-position-4-cube-5': [0.005, 0.02],
 }
