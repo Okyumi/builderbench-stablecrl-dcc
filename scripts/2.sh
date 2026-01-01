@@ -1,10 +1,9 @@
 #!/bin/bash
 
 PYTHON_SCRIPT="ppo.py"
-NUM_CUBES=(3 3 4 4)
+NUM_CUBES=(3 4 5 6)
 GPU_IDS=(0 1 2 3)
-SEEDS=(42 43 42 43)
-EPISODE_LENGTH=500
+SEEDS=(0 0 0 0)
 
 # Get the number of instances from the length of the GPU array
 NUM_INSTANCES=${#GPU_IDS[@]}
@@ -23,16 +22,16 @@ for i in $(seq 0 $((NUM_INSTANCES - 1))); do
     (
         cd ..
 
-        echo "Starting instance with SEED $SEED on task creative-$NUM_CUBE on CUDA device: $GPU_ID (from $(pwd))..."
+        echo "Starting instance with SEED $SEED on cube-$NUM_CUBE on CUDA device: $GPU_ID (from $(pwd))..."
 
         # Run the command from the parent directory
         CUDA_VISIBLE_DEVICES=$GPU_ID python $PYTHON_SCRIPT \
-            --env_id="creative-$NUM_CUBE-task1" \
-            --wandb_name_tag="direct-force-control" \
+            --wandb_name_tag="no-permutation" \
+            --env_id="planar-position-4-cube-$NUM_CUBE" \
             --seed=$SEED \
-            --env_episode_length=$EPISODE_LENGTH \
-            --num_timesteps=3000000000 \
-            --track
+            --num_timesteps=1_000_000_000 \
+            --track \
+            --no-permutation_invariant_reward
     ) &
 
 done
