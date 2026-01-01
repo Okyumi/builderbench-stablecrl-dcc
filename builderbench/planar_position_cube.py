@@ -304,13 +304,26 @@ class PlanarPositionCube():
         return spec
     
     def reset(self, rng: jax.Array):
-        rng, rng_box, rng_target, rng_starts, rng_select_action = jax.random.split(rng, 5)
+        rng, rng_box, rng_box_noise, rng_target, rng_target_noise, rng_starts, rng_select_action = jax.random.split(rng, 7)
 
         object_pos = jax.random.choice(rng_starts, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)
+        object_pos += jax.random.normal(rng_box_noise, shape=object_pos.shape) * 0.002    
+        object_pos = jnp.clip(
+            object_pos, 
+            self._workspace_bounds[0][:2], 
+            self._workspace_bounds[1][:2]
+        )
+
         achieved_goal = object_pos.reshape(-1)
         object_pos = object_pos.reshape(-1)
 
         target_object_pos = jax.random.choice(rng_target, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)   
+        target_object_pos += jax.random.normal(rng_target_noise, shape=target_object_pos.shape) * 0.002    
+        target_object_pos = jnp.clip(
+            target_object_pos, 
+            self._workspace_bounds[0][:2], 
+            self._workspace_bounds[1][:2]
+        )
         target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1))
 
         # set initial object position
@@ -379,12 +392,19 @@ class PlanarPositionCube():
 
         select_action = info["select_action"]
 
-        obs = jnp.concatenate([
-            obj_pos,
-            obj_linvel,
-            data.ctrl,
-            select_action[None],
-        ])
+        if self._config.delta_control:
+            obs = jnp.concatenate([
+                obj_pos,
+                obj_linvel,
+                data.ctrl,
+                select_action[None],
+            ])
+        else:
+            obs = jnp.concatenate([
+                obj_pos,
+                obj_linvel,
+                select_action[None],
+            ])
 
         info.update({
             "achieved_goal": achieved_goal, 
