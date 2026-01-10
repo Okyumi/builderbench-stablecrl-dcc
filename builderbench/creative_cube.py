@@ -547,7 +547,8 @@ class SparseCreativeCube(CreativeCube):
         config: config_dict.ConfigDict = default_config(),
     ):
         super().__init__(config=config)
-    
+        assert self._config.env_early_termination == False, "sparse-creative envs requires env_early_termination to be False"
+        
     def get_permutation_invariant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(3)]
         achieved_goal = obj_pos
@@ -605,3 +606,24 @@ class SparseCreativeCube(CreativeCube):
         }
 
         return reward, reward_info
+    
+    def get_permutation_invariant_reward_from_goals(self, achieved_goal, target_goal):
+        obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
+        cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
+        obj_target_pos_err = jnp.sqrt( obj_target_pos_squared_pairwise_err[cube_ids, target_ids] )
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes
+        return reward
+        
+    def get_permutation_variant_reward_from_goals(self, achieved_goal, target_goal):
+        obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
+        reward = jnp.sum( obj_target_pos_err < self._config.success_threshold ).astype(float) - self._config.num_cubes        
+        return reward
+
+    def get_reward_from_goals(self, achieved_goal, target_goal):
+        achieved_goal = achieved_goal.reshape((self._config.num_cubes, -1))
+        target_goal = target_goal.reshape((self._config.num_cubes, -1))
+        if self._config.permutation_invariant_reward:
+            reward = self.get_permutation_invariant_reward_from_goals(achieved_goal, target_goal)
+        else:
+            reward = self.get_permutation_variant_reward_from_goals(achieved_goal, target_goal)
+        return reward

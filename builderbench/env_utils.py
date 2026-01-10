@@ -86,7 +86,7 @@ def make_env(args):
 		default_config = default_config()
 		default_config.num_cubes = num_cubes
 		default_config.task_id = task_id
-		episode_length = 100 + num_cubes * 100
+		episode_length = 100 + num_cubes * 50
 
 	elif re.fullmatch(r"planar-\d+-cube-\d+", args.env_id):
 		halfgrid_size = int( re.search(r"planar-(\d+)", args.env_id).group(1))

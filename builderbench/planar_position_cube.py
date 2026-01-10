@@ -545,6 +545,7 @@ class SparsePlanarPositionCube(PlanarPositionCube):
         config: config_dict.ConfigDict = default_config(),
     ):
         super().__init__(config=config)
+        assert self._config.env_early_termination == False, "sparse-creative envs requires env_early_termination to be False"
     
     def get_permutation_invariant_reward_from_obs(self, data, info):
         obj_pos = data.qpos[self._objs_qposadr[:, None] + np.arange(2)]
