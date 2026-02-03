@@ -398,13 +398,23 @@ class CreativeCube():
 
         select_action = info["select_action"]
 
-        obs = jnp.concatenate([
-            obj_pos,
-            obj_quat,
-            obj_linvel,
-            obj_angvel,
-            select_action[None],
-        ])
+        if self._config.delta_control:
+            obs = jnp.concatenate([
+                obj_pos,
+                obj_quat,
+                obj_linvel,
+                obj_angvel,
+                data.ctrl,
+                select_action[None],
+            ])
+        else:
+            obs = jnp.concatenate([
+                obj_pos,
+                obj_quat,
+                obj_linvel,
+                obj_angvel,
+                select_action[None],
+            ])
 
         info.update({
             "achieved_goal": achieved_goal, 

@@ -300,10 +300,10 @@ class PlanarCube():
         return spec
     
     def reset(self, rng: jax.Array):
-        rng, rng_box, rng_box_noise, rng_target, rng_target_noise, rng_starts, rng_select_action = jax.random.split(rng, 7)
+        rng, rng_starts, rng_starts_noise, rng_target, rng_target_noise, rng_select_action = jax.random.split(rng, 6)
 
         object_pos = jax.random.choice(rng_starts, self._grid_points, shape=(self._config.num_cubes,), axis=0, replace=False)
-        object_pos += jax.random.normal(rng_box_noise, shape=object_pos.shape) * 0.002    
+        object_pos += jax.random.normal(rng_starts_noise, shape=object_pos.shape) * 0.002    
         object_pos = jnp.clip(
             object_pos, 
             self._workspace_bounds[0][:2], 
