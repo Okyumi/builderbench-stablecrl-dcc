@@ -68,8 +68,6 @@ class Args:
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     encoder_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 64
-    batch_size: int = 1024
-    sequence_length: int = 1024
     actor_learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     discount: float = 0.99
@@ -78,7 +76,6 @@ class Args:
     rep_size: int = 64
     max_replay_size: int = 10000
     min_replay_size: int = 1000
-
     diagnostic: bool = False
 
 @flax.struct.dataclass
@@ -109,18 +106,19 @@ class SA_encoder(nn.Module):
             normalize = lambda x: nn.LayerNorm()(x)
         else:
             normalize = lambda x: x
+        hidden_dim = 1024
 
         x = jnp.concatenate([s, a], axis=-1)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
         x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
@@ -139,17 +137,18 @@ class G_encoder(nn.Module):
             normalize = lambda x: nn.LayerNorm()(x)
         else:
             normalize = lambda x: x
-
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(g)
+        hidden_dim = 1024
+        
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(g)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
         x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
@@ -171,18 +170,19 @@ class Actor(nn.Module):
 
         lecun_unifrom = variance_scaling(1/3, "fan_in", "uniform")
         bias_init = nn.initializers.zeros
+        hidden_dim = 1024
 
         x = jnp.concatenate([s, g_repr], axis=-1)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(1024, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
 
@@ -231,9 +231,9 @@ def main(args: Args):
     args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
 
     print(f"Total number of training steps = {args.num_training_step}")
-    print(f"Total number of gradient steps per training step = { (args.sequence_length * args.num_envs) // args.batch_size}")
+    print(f"Total number of gradient steps per training step = { (args.rollout_length * args.num_envs) // args.num_envs}")
     print(f"Total number of env steps per training step = {args.num_envs * args.rollout_length}")
-    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / ( args.sequence_length * args.num_envs // args.batch_size )}") 
+    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / ( args.rollout_length * args.num_envs // args.num_envs )}") 
 
     args.exp_name = f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}__{os.path.basename(__file__)[: -len('.py')]}__{int(time.time())}"
     
@@ -338,9 +338,9 @@ def main(args: Args):
             TrajectoryUniformSamplingQueue(
                 max_replay_size=args.max_replay_size,
                 dummy_data_sample=dummy_transition,
-                sample_batch_size=args.batch_size,
+                sample_batch_size=args.num_envs,
                 num_envs=args.num_envs,
-                sequence_length=args.sequence_length+1,
+                sequence_length=episode_length+1,
             )
         )
     buffer_state = jax.jit(replay_buffer.init)(key_buffer)
@@ -498,8 +498,17 @@ def main(args: Args):
     
     @jax.jit
     def sgd_step(carry, transitions):
-        training_state, key = carry
-        key, key_critic, key_actor = jax.random.split(key, 3)
+        training_state, buffer_state, key = carry
+
+        key, key_critic, key_actor, key_sampling1, key_sampling2 = jax.random.split(key, 5)
+
+        buffer_state, transitions = replay_buffer.sample(buffer_state)
+        batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
+        transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
+            (args.discount,), transitions, batch_keys
+        )
+        random_indices = jax.random.randint(key_sampling2, (transitions.action.shape[0],), minval=0, maxval=transitions.action.shape[1])
+        transitions = jax.tree_util.tree_map(lambda x: x[jnp.arange(x.shape[0]), random_indices], transitions)
 
         training_state, actor_metrics = update_actor_and_alpha(transitions, training_state, key_actor)
 
@@ -511,34 +520,13 @@ def main(args: Args):
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
         
-        return (training_state, key,), metrics
+        return (training_state, buffer_state, key,), metrics
 
     @jax.jit
     def learn_step(training_state, buffer_state, key):
-        experience_key, sampling_key, training_key = jax.random.split(key, 3)
 
-        # sample actor-step worth of transitions
-        buffer_state, transitions = replay_buffer.sample(buffer_state)
-
-        # process transitions for training
-        batch_keys = jax.random.split(sampling_key, transitions.observation.shape[0])
-        transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
-            (args.discount,), transitions, batch_keys
-        )
-        
-        transitions = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (-1,) + x.shape[2:], order="F"),
-            transitions,
-        )
-        permutation = jax.random.permutation(experience_key, len(transitions.action))
-        transitions = jax.tree_util.tree_map(lambda x: x[permutation], transitions)
-        transitions = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (-1, args.batch_size) + x.shape[1:]),
-            transitions,
-        )
-
-        # take actor-step worth of training-step
-        (training_state, _,), metrics = jax.lax.scan(sgd_step, (training_state, training_key), transitions)
+        num_sgd_steps = (args.rollout_length * args.num_envs) // args.num_envs
+        (training_state, buffer_state, _,), metrics = jax.lax.scan(sgd_step, (training_state, buffer_state, key), (), length=num_sgd_steps)
 
         return training_state, buffer_state, metrics
 
