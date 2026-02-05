@@ -76,6 +76,17 @@ def make_env(args):
 		default_config.num_cubes = num_cubes
 		default_config.task_id = task_id
 		episode_length = 100 + num_cubes * 50
+	
+	elif re.fullmatch(r"truncated-reward-creative-\d+-task\d+", args.env_id):
+		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
+		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
+
+		from builderbench.creative_cube import TruncatedRewardCreativeCube, default_config
+		env_class = TruncatedRewardCreativeCube
+		default_config = default_config()
+		default_config.num_cubes = num_cubes
+		default_config.task_id = task_id
+		episode_length = 100 + num_cubes * 50
 
 	elif re.fullmatch(r"sparse-creative-\d+-task\d+", args.env_id):
 		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))

@@ -22,27 +22,37 @@ _MJX_PARAMS = {
     'creative-1-task2': [16, 84],
     'sparse-creative-1-task1': [16, 84],
     'sparse-creative-1-task2': [16, 84],
+    'truncated-reward-creative-1-task1': [16, 84],
+    'truncated-reward-creative-1-task2': [16, 84],
 
     'creative-2-task1': [16, 128],
     'sparse-creative-2-task1': [16, 128],
+    'truncated-reward-creative-2-task1': [16, 128],
+    'truncated-reward-creative-2-task2': [16, 128],
 
     'creative-3-task1': [24, 144],
     'sparse-creative-3-task1': [24, 144],
+    'truncated-reward-creative-3-task1': [24, 144],
 
     'creative-4-task1': [24, 256],
     'sparse-creative-4-task1': [24, 256],
+    'truncated-reward-creative-4-task1': [24, 256],
 
     'creative-5-task1': [24, 400],
     'sparse-creative-5-task1': [24, 400],
+    'truncated-reward-creative-5-task1': [24, 400],
 
     'creative-6-task1': [24, 576],
     'sparse-creative-6-task1': [24, 576],
+    'truncated-reward-creative-6-task1': [24, 576],
 
     'creative-7-task1': [32, 784],
     'sparse-creative-7-task1': [32, 784],
+    'truncated-reward-creative-7-task1': [32, 784],
 
     'creative-8-task1': [36, 1024],
     'sparse-creative-8-task1': [36, 1024],
+    'truncated-reward-creative-8-task1': [36, 1024],
 
     # planar tasks
     'planar-4-cube-1': [16, 84],
@@ -97,27 +107,37 @@ _TIME_STEPS = {
     'creative-1-task2': [0.005, 0.02],
     'sparse-creative-1-task1': [0.005, 0.02],
     'sparse-creative-1-task2': [0.005, 0.02],
+    'truncated-reward-creative-1-task1': [0.005, 0.02],
+    'truncated-reward-creative-1-task2': [0.005, 0.02],
 
     'creative-2-task1': [0.005, 0.02],
     'sparse-creative-2-task1': [0.005, 0.02],
+    'truncated-reward-creative-2-task1': [0.005, 0.02],
+    'truncated-reward-creative-2-task2': [0.005, 0.02],
 
     'creative-3-task1': [0.005, 0.02],
     'sparse-creative-3-task1': [0.005, 0.02],
+    'truncated-reward-creative-3-task1': [0.005, 0.02],
 
     'creative-4-task1': [0.005, 0.02],
     'sparse-creative-4-task1': [0.005, 0.02],
+    'truncated-reward-creative-4-task1': [0.005, 0.02],
 
     'creative-5-task1': [0.005, 0.02],
     'sparse-creative-5-task1': [0.005, 0.02],
+    'truncated-reward-creative-5-task1': [0.005, 0.02],
 
     'creative-6-task1': [0.005, 0.02],
     'sparse-creative-6-task1': [0.005, 0.02],
+    'truncated-reward-creative-6-task1': [0.005, 0.02],
 
     'creative-7-task1': [0.005, 0.02],
     'sparse-creative-7-task1': [0.005, 0.02],
+    'truncated-reward-creative-7-task1': [0.005, 0.02],
 
     'creative-8-task1': [0.005, 0.02],
     'sparse-creative-8-task1': [0.005, 0.02],
+    'truncated-reward-creative-8-task1': [0.005, 0.02],
 
     # planar tasks
     'planar-4-cube-1': [0.005, 0.02],
