@@ -36,7 +36,7 @@ from builderbench.env_utils import make_env
 @dataclass
 class Args:
     # experiment
-    agent: str = "ppdo"
+    agent: str = "ppo"
     seed: int = 1
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     
@@ -57,13 +57,14 @@ class Args:
     # environment
     env_id: str = 'creative-1-task1'
     num_envs: int = 2048
+    pd_duration: int = 5
     num_eval_envs: int = 128
     env_early_termination: bool = True
     env_episode_length: int = None
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
-    num_timesteps: int = 50_000_000
+    num_timesteps: int = 50000000
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     value_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 160
@@ -72,14 +73,13 @@ class Args:
     learning_rate: float = 1e-4
     discount: float = 0.99
     entropy_cost: float = 2e-2
-    reward_scaling: float = 0.1
+    reward_scaling: float = 1.0
     gae_lambda: float = 0.95
     clipping_epsilon: float = 0.3
     normalize_advantage: bool = True
 
     diagnostic: bool = False
 
-    duration: int = 5
 
 @flax.struct.dataclass
 class PPOTrainingState(TrainState):
@@ -179,8 +179,8 @@ def make_inference_fn(ppo_networks):
 def main(args: Args):
     
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
-    args.num_training_steps_per_eval = max(1, args.num_training_step // args.num_eval_steps )
-    args.num_training_steps_per_real_reset = max(1, args.num_training_step // max(1, args.num_reset_steps))
+    args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps
+    args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
     args.minibatch_size = args.num_envs * args.rollout_length // ( args.num_minibatches_per_rollout )
         
     print(f"Total number of training steps = {args.num_training_step}")
@@ -213,10 +213,9 @@ def main(args: Args):
 
     # Initialize environment
     env_class, default_config = make_env(args)
-    assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
-    episode_length = default_config.episode_length // args.duration
-    env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
-    eval_env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
+    episode_length = (args.env_episode_length or default_config.episode_length) // args.pd_duration
+    env = wrap_env( PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length )
+    eval_env = wrap_env( PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length )
 
     # Initialize checkpoint folder
     if args.save_checkpoint:

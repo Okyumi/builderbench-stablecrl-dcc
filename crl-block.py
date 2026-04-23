@@ -34,11 +34,105 @@ from typing import NamedTuple
 from wandb_osh.hooks import TriggerWandbSyncHook
 
 from utils.wrapper import wrap_env
-from utils.evaluation import Evaluator
+from utils.evaluation import Evaluator, get_video
 from utils.networks import MLP, save_params
 from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
+
+
+def save_gif(frames, path, fps=10):
+    from PIL import Image
+    imgs = [Image.fromarray(np.asarray(f).astype(np.uint8)) for f in frames]
+    duration_ms = max(1, int(round(1000 / fps)))
+    imgs[0].save(
+        path,
+        save_all=True,
+        append_images=imgs[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+
+
+def render_cube_positions(env, cube_pos_vec, mocap_pos_vec=None):
+    """Render a (num_cubes*3,) cube-position vector as a mujoco scene.
+
+    Fills a copy of the env's init qpos with the given cube XYZs (leaving
+    quats at init) and zero velocities. If `mocap_pos_vec` is given (same
+    shape), it's drawn as the scene's target markers; otherwise mocap is
+    pushed off-screen.
+    """
+    num_cubes = env._config.num_cubes
+    qpos = np.array(env._init_q, copy=True)
+    qpos[np.asarray(env._objs_pos_qpos_idxs)] = np.asarray(cube_pos_vec).reshape(-1)
+    qvel = np.zeros_like(np.array(env._init_v))
+    if mocap_pos_vec is None:
+        mocap_pos = np.tile(np.array([10.0, 10.0, 10.0]), num_cubes)
+    else:
+        mocap_pos = np.asarray(mocap_pos_vec).reshape(-1)
+    identity_quats = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), num_cubes)
+    return env.render_from_info(qpos, qvel, mocap_pos, identity_quats)
+
+
+def visualize_crl_batch(env, achieved_goals, future_goals, num_anchors=4, num_negatives=4):
+    """Render a grid showing anchor state, positive goal, and negative goals.
+
+    Col 0: anchor cubes at `achieved[i]` with mocap targets placed at `future[i]`
+           (positive goal) -- mirrors what the critic sees: (state, goal).
+    Col 1: cubes at `future[i]` rendered alone -- the positive goal configuration.
+    Col 2..: cubes at `future[j!=i]` rendered alone -- negatives pulled from the
+           same minibatch (exactly as InfoNCE uses them).
+
+    Subplot titles include the L2 cube-position distance from the anchor, so it's
+    visible when positive/negatives are numerically close (common early in training).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    achieved = np.asarray(achieved_goals)
+    future = np.asarray(future_goals)
+    B = achieved.shape[0]
+    num_anchors = min(num_anchors, B)
+    num_negatives = min(num_negatives, B - 1)
+
+    # cache pure-goal renders (no mocap) keyed by row index in `future`
+    goal_cache = {}
+    def render_goal(j):
+        if j not in goal_cache:
+            goal_cache[j] = render_cube_positions(env, future[j])
+        return goal_cache[j]
+
+    print("[sample viz] anchor -> {positive, neg...} L2 distances (cube XYZ):")
+    ncols = 2 + num_negatives
+    fig, axes = plt.subplots(num_anchors, ncols, figsize=(2.4 * ncols, 2.4 * num_anchors), squeeze=False)
+    for i in range(num_anchors):
+        # anchor cubes with positive goal overlaid as mocap targets
+        axes[i, 0].imshow(render_cube_positions(env, achieved[i], mocap_pos_vec=future[i]))
+        axes[i, 0].set_ylabel(f"sample {i}")
+        axes[i, 0].set_xticks([]); axes[i, 0].set_yticks([])
+
+        d_pos = float(np.linalg.norm(achieved[i] - future[i]))
+        axes[i, 1].imshow(render_goal(i))
+        axes[i, 1].set_title(f"pos  Δ={d_pos:.3f}")
+        axes[i, 1].set_xticks([]); axes[i, 1].set_yticks([])
+
+        neg_idxs = [j for j in range(B) if j != i][:num_negatives]
+        neg_dists = []
+        for k, j in enumerate(neg_idxs):
+            d_neg = float(np.linalg.norm(achieved[i] - future[j]))
+            neg_dists.append(d_neg)
+            axes[i, 2 + k].imshow(render_goal(j))
+            axes[i, 2 + k].set_title(f"neg{k} Δ={d_neg:.3f}")
+            axes[i, 2 + k].set_xticks([]); axes[i, 2 + k].set_yticks([])
+
+        print(f"  sample {i}: pos={d_pos:.4f}  negs={['%.4f' % d for d in neg_dists]}")
+
+        if i == 0:
+            axes[i, 0].set_title("anchor (cubes) + positive (mocap)")
+    fig.tight_layout()
+    return fig
 
 @dataclass
 class Args:
@@ -48,9 +142,9 @@ class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     
     # logging and checkpointing
-    track: bool = False
-    wandb_project_name: str = "builderbench"
-    wandb_entity: str = 'raj19'
+    track: bool = True
+    wandb_project_name: str = "rl"
+    wandb_entity: str = 'david-yan'
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -61,11 +155,22 @@ class Args:
 
     save_checkpoint: bool = True
 
+    # eval-time video recording
+    record_videos: bool = True            # render one eval episode per eval step
+    video_every_n_evals: int = 1          # record every N eval steps (1 = every eval)
+    video_fps: int = 10
+
+    # training-sample visualization (anchor / positive / negatives from CRL batch)
+    visualize_samples: bool = True
+    viz_every_n_evals: int = 1
+    viz_num_anchors: int = 4
+    viz_num_negatives: int = 4
+
     # environment
     env_id: str = 'creative-1-task1'
     num_envs: int = 1024
     num_eval_envs: int = 128
-    env_early_termination: bool = False
+    env_early_termination: bool = False # note!
     env_episode_length: int = None
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
@@ -83,6 +188,8 @@ class Args:
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
+    num_blocks: int = 16
+    hidden_dim: int = 256
 
 @flax.struct.dataclass
 class CRLTrainingState:
@@ -99,102 +206,97 @@ class Transition(NamedTuple):
     action: jnp.ndarray
     extras: jnp.ndarray = ()
 
+class ResidualBlock(nn.Module):
+    hidden_dim: int
+    norm_type: str = "layer_norm"
+
+    @nn.compact
+    def __call__(self, x):
+        lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
+        bias_init = nn.initializers.zeros
+        normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
+
+        residual = x
+        for _ in range(4):
+            x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+            x = normalize(x)
+            x = nn.swish(x)
+        return x + residual
+
+
 class SA_encoder(nn.Module):
     rep_size: int
-    norm_type = "layer_norm"
+    num_blocks: int = 1
+    hidden_dim: int = 1024
+    norm_type: str = "layer_norm"
+
     @nn.compact
     def __call__(self, s: jnp.ndarray, a: jnp.ndarray):
-
-        lecun_unifrom = variance_scaling(1/3, "fan_in", "uniform")
+        lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
         bias_init = nn.initializers.zeros
-        
-        if self.norm_type == "layer_norm":
-            normalize = lambda x: nn.LayerNorm()(x)
-        else:
-            normalize = lambda x: x
-        hidden_dim = 1024
+        normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
         x = jnp.concatenate([s, a], axis=-1)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+
+        for _ in range(self.num_blocks):
+            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+
+        x = nn.Dense(self.rep_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         return x
-    
+
+
 class G_encoder(nn.Module):
     rep_size: int
-    norm_type = "layer_norm"
+    num_blocks: int = 1
+    hidden_dim: int = 1024
+    norm_type: str = "layer_norm"
+
     @nn.compact
     def __call__(self, g: jnp.ndarray):
-
-        lecun_unifrom = variance_scaling(1/3, "fan_in", "uniform")
+        lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
         bias_init = nn.initializers.zeros
+        normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
-        if self.norm_type == "layer_norm":
-            normalize = lambda x: nn.LayerNorm()(x)
-        else:
-            normalize = lambda x: x
-        hidden_dim = 1024
-        
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(g)
+        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(g)
         x = normalize(x)
         x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+
+        for _ in range(self.num_blocks):
+            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+
+        x = nn.Dense(self.rep_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         return x
-    
+
+
 class Actor(nn.Module):
     action_size: int
-    norm_type = "layer_norm"
+    num_blocks: int = 1
+    hidden_dim: int = 1024
+    norm_type: str = "layer_norm"
 
     LOG_STD_MAX = 2
     LOG_STD_MIN = -5
 
     @nn.compact
     def __call__(self, s, g_repr):
-        if self.norm_type == "layer_norm":
-            normalize = lambda x: nn.LayerNorm()(x)
-        else:
-            normalize = lambda x: x
-
-        lecun_unifrom = variance_scaling(1/3, "fan_in", "uniform")
+        lecun_uniform = variance_scaling(1/3, "fan_in", "uniform")
         bias_init = nn.initializers.zeros
-        hidden_dim = 1024
+        normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
         x = jnp.concatenate([s, g_repr], axis=-1)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
-        x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         x = normalize(x)
         x = nn.swish(x)
 
-        mean = nn.Dense(self.action_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        log_std = nn.Dense(self.action_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        
+        for _ in range(self.num_blocks):
+            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+
+        mean = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+        log_std = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+
         log_std = nn.tanh(log_std)
         log_std = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * (log_std + 1)  # From SpinUp / Denis Yarats
 
@@ -290,16 +392,16 @@ def main(args: Args):
 
     # Network setup
     # Actor
-    actor = Actor(action_size=action_size)
+    actor = Actor(action_size=action_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
     actor_state = TrainState.create(
         apply_fn=actor.apply,
         params=actor.init(key_actor, np.ones([1, obs_size]), np.ones([1, args.rep_size])),
         tx=optax.adam(learning_rate=args.actor_learning_rate)
     )
     # Critic
-    sa_encoder = SA_encoder(rep_size=args.rep_size)
+    sa_encoder = SA_encoder(rep_size=args.rep_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
     sa_encoder_params = sa_encoder.init(key_sa, np.ones([1, obs_size]), np.ones([1, action_size]))
-    g_encoder = G_encoder(rep_size=args.rep_size)
+    g_encoder = G_encoder(rep_size=args.rep_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
     g_encoder_params = g_encoder.init(key_g, np.ones([1, goal_size]))
     critic_state = TrainState.create(
         apply_fn=None,
@@ -311,6 +413,9 @@ def main(args: Args):
     g_encoder.apply = jax.jit(g_encoder.apply)
 
     print(f'\nNumber of parameters in actor network are: {count_parameters(actor_state.params)} and the critic network are: {count_parameters(critic_state.params)}\n')
+    print(f'Network config: hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks} '
+          f'(actor blocks={actor.num_blocks}, sa_encoder blocks={sa_encoder.num_blocks}, g_encoder blocks={g_encoder.num_blocks}; '
+          f'actor width={actor.hidden_dim}, sa_encoder width={sa_encoder.hidden_dim}, g_encoder width={g_encoder.hidden_dim})\n')
 
     # Trainstate
     training_state = CRLTrainingState(
@@ -605,10 +710,76 @@ def main(args: Args):
                 training_metrics=metrics,
             )
 
+            video_path_file = None
+            if args.record_videos and es % max(1, args.video_every_n_evals) == 0:
+                try:
+                    key, video_key = jax.random.split(key, 2)
+                    policy_params = {
+                        "actor": training_state.actor_state.params,
+                        "g_encoder": training_state.critic_state.params["g_encoder"],
+                    }
+                    inference_fn = make_policy(policy_params, deterministic=True)
+                    video_frames = get_video(args.env_id, inference_fn, eval_env, video_key, episode_length)
+                    if args.save_checkpoint:
+                        video_dir = f"{save_path}/videos"
+                        os.makedirs(video_dir, exist_ok=True)
+                        video_path_file = f"{video_dir}/eval_{es}.gif"
+                        save_gif(video_frames, video_path_file, fps=args.video_fps)
+                        print(f"Saved eval video to {video_path_file}")
+                except Exception as e:
+                    print(f"Video recording failed at eval {es}: {e}")
+                    video_path_file = None
+
+            viz_path_file = None
+            if args.visualize_samples and args.save_checkpoint and es % max(1, args.viz_every_n_evals) == 0:
+                try:
+                    key, viz_key = jax.random.split(key, 2)
+                    k_flatten, k_idx = jax.random.split(viz_key, 2)
+                    # Sample a batch exactly like sgd_step, but only for visualization.
+                    _, viz_trans = replay_buffer.sample(buffer_state)
+                    batch_keys = jax.random.split(k_flatten, viz_trans.observation.shape[0])
+                    viz_trans = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
+                        (args.discount,), viz_trans, batch_keys
+                    )
+                    random_indices = jax.random.randint(
+                        k_idx, (viz_trans.action.shape[0],),
+                        minval=0, maxval=viz_trans.action.shape[1],
+                    )
+                    viz_trans = jax.tree_util.tree_map(
+                        lambda x: x[jnp.arange(x.shape[0]), random_indices], viz_trans
+                    )
+                    achieved_np = np.asarray(viz_trans.achieved_goal)
+                    future_np = np.asarray(viz_trans.extras["future_goal"])
+                    fig = visualize_crl_batch(
+                        eval_env, achieved_np, future_np,
+                        num_anchors=args.viz_num_anchors,
+                        num_negatives=args.viz_num_negatives,
+                    )
+                    viz_dir = f"{save_path}/sample_viz"
+                    os.makedirs(viz_dir, exist_ok=True)
+                    viz_path_file = f"{viz_dir}/samples_{es}.png"
+                    fig.savefig(viz_path_file, dpi=100, bbox_inches="tight")
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
+                    print(f"Saved sample viz to {viz_path_file}")
+                except Exception as e:
+                    print(f"Sample viz failed at eval {es}: {e}")
+                    viz_path_file = None
+
             print(f'\nEvaluation step {es}:\n')
             pprint.pprint(metrics)
             if args.track:
                 wandb.log(metrics, step=es)
+                if video_path_file is not None and os.path.exists(video_path_file):
+                    try:
+                        wandb.log({"eval/video": wandb.Video(video_path_file, fps=args.video_fps, format="gif")}, step=es)
+                    except Exception as e:
+                        print(f"wandb video log failed at eval {es}: {e}")
+                if viz_path_file is not None and os.path.exists(viz_path_file):
+                    try:
+                        wandb.log({"train/samples": wandb.Image(viz_path_file)}, step=es)
+                    except Exception as e:
+                        print(f"wandb sample viz log failed at eval {es}: {e}")
                 if args.wandb_mode == 'offline':
                     trigger_sync()
 

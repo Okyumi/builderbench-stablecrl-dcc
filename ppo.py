@@ -6,6 +6,7 @@ os.environ["XLA_FLAGS"] = xla_flags
 os.environ["MUJOCO_GL"] = "egl"
 
 import time
+import json
 import tyro
 import numpy as np
 import functools
@@ -41,9 +42,9 @@ class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     
     # logging and checkpointing
-    track: bool = False
-    wandb_project_name: str = "builderbench"
-    wandb_entity: str = 'raj19'
+    track: bool = True
+    wandb_project_name: str = "rl"
+    wandb_entity: str = 'david-yan'
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -647,19 +648,62 @@ def main(args: Args):
                 wandb.log(metrics, step=es)
                 if args.wandb_mode == 'offline':
                     trigger_sync()
-            metrics = None
 
             if args.save_checkpoint:
                 save_params(
-                    f"{save_path}/params_{es}.pkl", 
+                    f"{save_path}/params_{es}.pkl",
                     params = (
-                        training_state.params['policy'], 
+                        training_state.params['policy'],
                         training_state.params['value'],
                         training_state.normalizer_params,
                     )
                 )
 
+                def _to_jsonable(v):
+                    if isinstance(v, (jnp.ndarray, np.ndarray)):
+                        return v.item() if v.ndim == 0 else v.tolist()
+                    if isinstance(v, (np.floating, np.integer, np.bool_)):
+                        return v.item()
+                    return v
+                log_entry = {"eval_step": es, **{k: _to_jsonable(v) for k, v in metrics.items()}}
+                with open(f"{save_path}/eval_log.jsonl", "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
+
+            metrics = None
             xt, data_collect_step_time, learn_step_time = time.time(), 0, 0
+
+    if args.save_checkpoint:
+        log_path = f"{save_path}/eval_log.jsonl"
+        if os.path.exists(log_path):
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            steps, success_rates, rewards = [], [], []
+            with open(log_path) as f:
+                for line in f:
+                    entry = json.loads(line)
+                    steps.append(entry.get("eval_step"))
+                    success_rates.append(entry.get("eval/episode_success_rate"))
+                    rewards.append(entry.get("eval/episode_reward"))
+
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+            axes[0].plot(steps, success_rates, marker="o")
+            axes[0].set_xlabel("Eval step")
+            axes[0].set_ylabel("eval/episode_success_rate")
+            axes[0].set_title("Episode success rate")
+            axes[0].grid(True, alpha=0.3)
+            axes[1].plot(steps, rewards, marker="o", color="tab:orange")
+            axes[1].set_xlabel("Eval step")
+            axes[1].set_ylabel("eval/episode_reward")
+            axes[1].set_title("Episode reward")
+            axes[1].grid(True, alpha=0.3)
+            fig.suptitle(args.exp_name)
+            fig.tight_layout()
+            plot_path = f"{save_path}/metrics.png"
+            fig.savefig(plot_path, dpi=120)
+            plt.close(fig)
+            print(f"Saved metrics plot to {plot_path}")
 
     if args.track:
         wandb.finish()

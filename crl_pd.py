@@ -33,24 +33,110 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 from wandb_osh.hooks import TriggerWandbSyncHook
 
-from utils.wrapper import wrap_env
-from utils.evaluation import Evaluator
+from utils.wrapper import wrap_env, PDWrapper
+from utils.evaluation import Evaluator, get_video
 from utils.networks import MLP, save_params
 from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
 
+
+def save_gif(frames, path, fps=10):
+    from PIL import Image
+    imgs = [Image.fromarray(np.asarray(f).astype(np.uint8)) for f in frames]
+    duration_ms = max(1, int(round(1000 / fps)))
+    imgs[0].save(
+        path,
+        save_all=True,
+        append_images=imgs[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+
+
+def render_cube_positions(env, cube_pos_vec, mocap_pos_vec=None):
+    """Render a (num_cubes*3,) cube-position vector as a mujoco scene."""
+    num_cubes = env._config.num_cubes
+    qpos = np.array(env._init_q, copy=True)
+    qpos[np.asarray(env._objs_pos_qpos_idxs)] = np.asarray(cube_pos_vec).reshape(-1)
+    qvel = np.zeros_like(np.array(env._init_v))
+    if mocap_pos_vec is None:
+        mocap_pos = np.tile(np.array([10.0, 10.0, 10.0]), num_cubes)
+    else:
+        mocap_pos = np.asarray(mocap_pos_vec).reshape(-1)
+    identity_quats = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), num_cubes)
+    return env.render_from_info(qpos, qvel, mocap_pos, identity_quats)
+
+
+def visualize_crl_batch(env, achieved_goals, future_goals, num_anchors=4, num_negatives=4):
+    """Render anchor, positive goal, and negatives from a sampled CRL batch."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    achieved = np.asarray(achieved_goals)
+    future = np.asarray(future_goals)
+    batch_size = achieved.shape[0]
+    num_anchors = min(num_anchors, batch_size)
+    num_negatives = min(num_negatives, batch_size - 1)
+
+    goal_cache = {}
+
+    def render_goal(idx):
+        if idx not in goal_cache:
+            goal_cache[idx] = render_cube_positions(env, future[idx])
+        return goal_cache[idx]
+
+    print("[sample viz] anchor -> {positive, neg...} L2 distances (cube XYZ):")
+    ncols = 2 + num_negatives
+    fig, axes = plt.subplots(
+        num_anchors,
+        ncols,
+        figsize=(2.4 * ncols, 2.4 * num_anchors),
+        squeeze=False,
+    )
+    for i in range(num_anchors):
+        axes[i, 0].imshow(render_cube_positions(env, achieved[i], mocap_pos_vec=future[i]))
+        axes[i, 0].set_ylabel(f"sample {i}")
+        axes[i, 0].set_xticks([])
+        axes[i, 0].set_yticks([])
+
+        d_pos = float(np.linalg.norm(achieved[i] - future[i]))
+        axes[i, 1].imshow(render_goal(i))
+        axes[i, 1].set_title(f"pos  Δ={d_pos:.3f}")
+        axes[i, 1].set_xticks([])
+        axes[i, 1].set_yticks([])
+
+        neg_idxs = [j for j in range(batch_size) if j != i][:num_negatives]
+        neg_dists = []
+        for k, j in enumerate(neg_idxs):
+            d_neg = float(np.linalg.norm(achieved[i] - future[j]))
+            neg_dists.append(d_neg)
+            axes[i, 2 + k].imshow(render_goal(j))
+            axes[i, 2 + k].set_title(f"neg{k} Δ={d_neg:.3f}")
+            axes[i, 2 + k].set_xticks([])
+            axes[i, 2 + k].set_yticks([])
+
+        print(f"  sample {i}: pos={d_pos:.4f}  negs={['%.4f' % d for d in neg_dists]}")
+
+        if i == 0:
+            axes[i, 0].set_title("anchor (cubes) + positive (mocap)")
+    fig.tight_layout()
+    return fig
+
+
 @dataclass
 class Args:
     # experiment
-    agent: str = "crl"
+    agent: str = "crl_pd"
     seed: int = 1
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    
+
     # logging and checkpointing
-    track: bool = False
-    wandb_project_name: str = "builderbench"
-    wandb_entity: str = 'raj19'
+    track: bool = True
+    wandb_project_name: str = "rl"
+    wandb_entity: str = 'david-yan'
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -60,6 +146,17 @@ class Args:
     num_reset_steps: int = 50             # number of times to call true resets (env.reset) instead of soft resets (AutoResetWrapper)
 
     save_checkpoint: bool = True
+
+    # eval-time video recording
+    record_videos: bool = True            # render one eval episode per eval step
+    video_every_n_evals: int = 1          # record every N eval steps (1 = every eval)
+    video_fps: int = 10
+
+    # training-sample visualization (anchor / positive / negatives from CRL batch)
+    visualize_samples: bool = True
+    viz_every_n_evals: int = 1
+    viz_num_anchors: int = 4
+    viz_num_negatives: int = 4
 
     # environment
     env_id: str = 'creative-1-task1'
@@ -84,6 +181,8 @@ class Args:
     min_replay_size: int = 1000
     diagnostic: bool = False
 
+    duration: int = 5
+
 @flax.struct.dataclass
 class CRLTrainingState:
     """Contains training state for the learner"""
@@ -91,7 +190,7 @@ class CRLTrainingState:
     gradient_steps: np.ndarray
     actor_state: TrainState
     critic_state: TrainState
-    
+
 class Transition(NamedTuple):
     """Container for a transition"""
     observation: jnp.ndarray
@@ -107,7 +206,7 @@ class SA_encoder(nn.Module):
 
         lecun_unifrom = variance_scaling(1/3, "fan_in", "uniform")
         bias_init = nn.initializers.zeros
-        
+
         if self.norm_type == "layer_norm":
             normalize = lambda x: nn.LayerNorm()(x)
         else:
@@ -129,7 +228,7 @@ class SA_encoder(nn.Module):
         x = nn.swish(x)
         x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         return x
-    
+
 class G_encoder(nn.Module):
     rep_size: int
     norm_type = "layer_norm"
@@ -144,7 +243,7 @@ class G_encoder(nn.Module):
         else:
             normalize = lambda x: x
         hidden_dim = 1024
-        
+
         x = nn.Dense(hidden_dim, kernel_init=lecun_unifrom, bias_init=bias_init)(g)
         x = normalize(x)
         x = nn.swish(x)
@@ -159,7 +258,7 @@ class G_encoder(nn.Module):
         x = nn.swish(x)
         x = nn.Dense(self.rep_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         return x
-    
+
 class Actor(nn.Module):
     action_size: int
     norm_type = "layer_norm"
@@ -194,29 +293,29 @@ class Actor(nn.Module):
 
         mean = nn.Dense(self.action_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
         log_std = nn.Dense(self.action_size, kernel_init=lecun_unifrom, bias_init=bias_init)(x)
-        
+
         log_std = nn.tanh(log_std)
         log_std = self.LOG_STD_MIN + 0.5 * (self.LOG_STD_MAX - self.LOG_STD_MIN) * (log_std + 1)  # From SpinUp / Denis Yarats
 
         return mean, log_std
 
-    
+
 def make_inference_fn(policy_network, g_encoder_network):
     """Creates params and inference function for the CRL agent."""
     def make_policy(params, deterministic: bool = False):
 
         def policy(observations, goals, key_sample):
-            
+
             goals = g_encoder_network.apply(params['g_encoder'], goals)
             means, log_stds = policy_network.apply(params['actor'], observations, goals)
-                
+
             if deterministic:
                 return nn.tanh( means ), {}
-            
+
             stds = jnp.exp(log_stds)
             raw_actions = means + stds * jax.random.normal(key_sample, shape=means.shape, dtype=means.dtype)
             postprocessed_actions = nn.tanh(raw_actions)
-                
+
             log_prob = jax.scipy.stats.norm.logpdf(raw_actions, loc=means, scale=stds)
             log_prob -= jnp.log((1 - jnp.square(postprocessed_actions)) + 1e-6)
             log_prob = log_prob.sum(-1)
@@ -231,7 +330,7 @@ def make_inference_fn(policy_network, g_encoder_network):
     return make_policy
 
 def main(args: Args):
-     
+
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
     args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps
     args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
@@ -239,10 +338,10 @@ def main(args: Args):
     print(f"Total number of training steps = {args.num_training_step}")
     print(f"Total number of gradient steps per training step = { (args.rollout_length * args.num_envs) // args.num_envs}")
     print(f"Total number of env steps per training step = {args.num_envs * args.rollout_length}")
-    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / ( args.rollout_length * args.num_envs // args.num_envs )}") 
+    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / ( args.rollout_length * args.num_envs // args.num_envs )}")
 
     args.exp_name = f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}__{os.path.basename(__file__)[: -len('.py')]}__{int(time.time())}"
-    
+
     # Initialize wandb if tracking is enabled
     if args.track:
         wandb.init(
@@ -259,16 +358,17 @@ def main(args: Args):
         if args.wandb_mode == 'offline':
             wandb_osh.set_log_level("ERROR")
             trigger_sync = TriggerWandbSyncHook()
-    
+
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, key_buffer, key_env, key_eval, key_actor, key_sa, key_g = jax.random.split(key, 7)
 
     # Initialize environment
     env_class, default_config = make_env(args)
-    env = wrap_env( env_class(config=default_config), default_config.episode_length )
-    eval_env = wrap_env( env_class(config=default_config), default_config.episode_length )  
-    episode_length = default_config.episode_length
+    assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
+    episode_length = default_config.episode_length // args.duration
+    env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
+    eval_env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
 
     # Initialize checkpoint folder
     if args.save_checkpoint:
@@ -332,14 +432,14 @@ def main(args: Args):
         extras={
             "state_extras": {
                 "traj_id": 0.0,
-            }        
+            }
         },
     )
     def jit_wrap(buffer):
         buffer.insert = jax.jit(buffer.insert)
         buffer.sample = jax.jit(buffer.sample)
         return buffer
-    
+
     replay_buffer = jit_wrap(
             TrajectoryUniformSamplingQueue(
                 max_replay_size=args.max_replay_size,
@@ -370,7 +470,7 @@ def main(args: Args):
         means, log_stds = actor.apply(training_state.actor_state.params, env_state.obs, g_repr)
         stds = jnp.exp(log_stds)
         actions = nn.tanh( means + stds * jax.random.normal(key, shape=means.shape, dtype=means.dtype) )
-        
+
         next_env_state = env.step(env_state, actions)
 
         state_extras = {x: next_env_state.info[x] for x in extra_fields}
@@ -382,7 +482,7 @@ def main(args: Args):
                                             action=actions,
                                             extras={"state_extras": state_extras},
                                         ), metrics
-    
+
     @jax.jit
     def data_collect_step(training_state, env_state, buffer_state, key):
         @jax.jit
@@ -390,10 +490,10 @@ def main(args: Args):
             training_state, env_state, current_key = carry
             current_key, next_key = jax.random.split(current_key)
             training_state, env_state, transition, metrics = actor_step(
-                training_state, 
-                env, 
-                env_state, 
-                current_key, 
+                training_state,
+                env,
+                env_state,
+                current_key,
                 extra_fields=("traj_id",),
                 metrics_fields=log_data_metric_keys,
             )
@@ -430,7 +530,7 @@ def main(args: Args):
             state = transitions.observation
             goal = transitions.extras['future_goal']
             sa_encoder_params, g_encoder_params = jax.lax.stop_gradient(critic_params["sa_encoder"]), jax.lax.stop_gradient(critic_params["g_encoder"])
-            
+
             g_repr = g_encoder.apply(g_encoder_params, goal)
 
             means, log_stds = actor.apply(actor_params, state, g_repr)
@@ -447,7 +547,7 @@ def main(args: Args):
             actor_loss = jnp.mean( args.entropy_cost * log_prob - (qf_pi) )
 
             return actor_loss, log_prob
-        
+
         (actorloss, log_prob), actor_grad = jax.value_and_grad(actor_loss, has_aux=True)(training_state.actor_state.params, training_state.critic_state.params, transitions, key)
         new_actor_state = training_state.actor_state.apply_gradients(grads=actor_grad)
 
@@ -459,23 +559,23 @@ def main(args: Args):
         }
 
         return training_state, metrics
-    
+
     @jax.jit
     def update_critic(transitions, training_state, key):
         def critic_loss(critic_params, transitions, key):
             sa_encoder_params, g_encoder_params = critic_params["sa_encoder"], critic_params["g_encoder"]
-            
+
             state = transitions.observation
             action = transitions.action
             goal = transitions.extras['future_goal']
-            
+
             sa_repr = sa_encoder.apply(sa_encoder_params, state, action)
             g_repr = g_encoder.apply(g_encoder_params, goal)
-            
+
             # InfoNCE
             logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1)) #shape = BxB
 
-            critic_loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1)) 
+            critic_loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1))
 
             # logsumexp regularisation
             logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
@@ -487,7 +587,7 @@ def main(args: Args):
             logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
 
             return critic_loss, (logsumexp, correct, logits_pos, logits_neg)
-            
+
         (loss, (logsumexp, correct, logits_pos, logits_neg)), grad = jax.value_and_grad(critic_loss, has_aux=True)(training_state.critic_state.params, transitions, key)
         new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
         training_state = training_state.replace(critic_state = new_critic_state)
@@ -501,7 +601,7 @@ def main(args: Args):
         }
 
         return training_state, metrics
-    
+
     @jax.jit
     def sgd_step(carry, transitions):
         training_state, buffer_state, key = carry
@@ -525,7 +625,7 @@ def main(args: Args):
         metrics = {}
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
-        
+
         return (training_state, buffer_state, key,), metrics
 
     @jax.jit
@@ -556,7 +656,7 @@ def main(args: Args):
         data_collect_start = time.time()
         training_state, env_state, buffer_state, data_metrics = data_collect_step(training_state, env_state, buffer_state, key_generate_rollout)
         data_collect_step_time += time.time() - data_collect_start
-        
+
         learn_step_start = time.time()
         training_state, buffer_state, training_metrics = learn_step(training_state, buffer_state, key_sgd)
         learn_step_time += time.time() - learn_step_start
@@ -567,7 +667,7 @@ def main(args: Args):
             metrics = jax.tree_util.tree_map(
                 lambda x, y: x + y, metrics, (data_metrics | training_metrics)
             )
-        
+
         if args.num_reset_steps > 0 and ts % args.num_training_steps_per_real_reset == 0:
             key_env, key = jax.random.split(key, 2)
             key_envs = jax.random.split(key_env, args.num_envs)
@@ -575,14 +675,14 @@ def main(args: Args):
 
         if ts % args.num_training_steps_per_eval == 0:
             es = ts // args.num_training_steps_per_eval
-            
+
             metrics = jax.tree_util.tree_map(
                 lambda x: x / args.num_training_steps_per_eval, metrics
             )
             metrics = jax.tree_util.tree_map(jnp.mean, metrics)
             jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
 
-            training_step_time = time.time() - xt            
+            training_step_time = time.time() - xt
             training_walltime += training_step_time
 
             sps = (
@@ -605,10 +705,79 @@ def main(args: Args):
                 training_metrics=metrics,
             )
 
+            video_path_file = None
+            if args.record_videos and es % max(1, args.video_every_n_evals) == 0:
+                try:
+                    key, video_key = jax.random.split(key, 2)
+                    policy_params = {
+                        "actor": training_state.actor_state.params,
+                        "g_encoder": training_state.critic_state.params["g_encoder"],
+                    }
+                    inference_fn = make_policy(policy_params, deterministic=True)
+                    video_frames = get_video(args.env_id, inference_fn, eval_env, video_key, episode_length)
+                    if args.save_checkpoint:
+                        video_dir = f"{save_path}/videos"
+                        os.makedirs(video_dir, exist_ok=True)
+                        video_path_file = f"{video_dir}/eval_{es}.gif"
+                        save_gif(video_frames, video_path_file, fps=args.video_fps)
+                        print(f"Saved eval video to {video_path_file}")
+                except Exception as e:
+                    print(f"Video recording failed at eval {es}: {e}")
+                    video_path_file = None
+
+            viz_path_file = None
+            if args.visualize_samples and args.save_checkpoint and es % max(1, args.viz_every_n_evals) == 0:
+                try:
+                    key, viz_key = jax.random.split(key, 2)
+                    k_flatten, k_idx = jax.random.split(viz_key, 2)
+                    _, viz_trans = replay_buffer.sample(buffer_state)
+                    batch_keys = jax.random.split(k_flatten, viz_trans.observation.shape[0])
+                    viz_trans = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
+                        (args.discount,), viz_trans, batch_keys
+                    )
+                    random_indices = jax.random.randint(
+                        k_idx,
+                        (viz_trans.action.shape[0],),
+                        minval=0,
+                        maxval=viz_trans.action.shape[1],
+                    )
+                    viz_trans = jax.tree_util.tree_map(
+                        lambda x: x[jnp.arange(x.shape[0]), random_indices], viz_trans
+                    )
+                    achieved_np = np.asarray(viz_trans.achieved_goal)
+                    future_np = np.asarray(viz_trans.extras["future_goal"])
+                    fig = visualize_crl_batch(
+                        eval_env,
+                        achieved_np,
+                        future_np,
+                        num_anchors=args.viz_num_anchors,
+                        num_negatives=args.viz_num_negatives,
+                    )
+                    viz_dir = f"{save_path}/sample_viz"
+                    os.makedirs(viz_dir, exist_ok=True)
+                    viz_path_file = f"{viz_dir}/samples_{es}.png"
+                    fig.savefig(viz_path_file, dpi=100, bbox_inches="tight")
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
+                    print(f"Saved sample viz to {viz_path_file}")
+                except Exception as e:
+                    print(f"Sample viz failed at eval {es}: {e}")
+                    viz_path_file = None
+
             print(f'\nEvaluation step {es}:\n')
             pprint.pprint(metrics)
             if args.track:
                 wandb.log(metrics, step=es)
+                if video_path_file is not None and os.path.exists(video_path_file):
+                    try:
+                        wandb.log({"eval/video": wandb.Video(video_path_file, fps=args.video_fps, format="gif")}, step=es)
+                    except Exception as e:
+                        print(f"wandb video log failed at eval {es}: {e}")
+                if viz_path_file is not None and os.path.exists(viz_path_file):
+                    try:
+                        wandb.log({"train/samples": wandb.Image(viz_path_file)}, step=es)
+                    except Exception as e:
+                        print(f"wandb sample viz log failed at eval {es}: {e}")
                 if args.wandb_mode == 'offline':
                     trigger_sync()
 
@@ -669,7 +838,7 @@ def main(args: Args):
 
     if args.track:
         wandb.finish()
-            
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     main(args)
