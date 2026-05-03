@@ -59,12 +59,12 @@ class Args:
     num_envs: int = 2048
     pd_duration: int = 5
     num_eval_envs: int = 128
-    env_early_termination: bool = True
+    env_early_termination: bool = False
     env_episode_length: int = None
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
-    num_timesteps: int = 50000000
+    num_timesteps: int = 200_000_000
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     value_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 160

@@ -167,7 +167,7 @@ class Args:
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
-    num_timesteps: int = 50_000_000
+    num_timesteps: int = 200_000_000
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     encoder_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 64
@@ -180,6 +180,7 @@ class Args:
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
+    repetition_factor: int = 1  # CRTR: >1 repeats each sampled trajectory this many times in the batch (1 = plain CRL)
 
     duration: int = 5
 
@@ -609,6 +610,14 @@ def main(args: Args):
         key, key_critic, key_actor, key_sampling1, key_sampling2 = jax.random.split(key, 5)
 
         buffer_state, transitions = replay_buffer.sample(buffer_state)
+        if args.repetition_factor > 1:
+            # CRTR: each unique trajectory appears `repetition_factor` times in the batch, so InfoNCE
+            # negatives include same-trajectory samples. The per-element keys below pick independent
+            # (anchor t0, future t1) for each repetition, matching the CRTR algorithm.
+            n_unique = transitions.observation.shape[0] // args.repetition_factor
+            transitions = jax.tree_util.tree_map(
+                lambda x: jnp.repeat(x[:n_unique], args.repetition_factor, axis=0), transitions
+            )
         batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
         transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
             (args.discount,), transitions, batch_keys

@@ -175,7 +175,7 @@ class Args:
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
-    num_timesteps: int = 50_000_000
+    num_timesteps: int = 200_000_000
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     encoder_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 64
@@ -183,13 +183,18 @@ class Args:
     critic_learning_rate: float = 3e-4
     discount: float = 0.99
     entropy_cost: float = 0.1
+    entropy_cost_final: float | None = None  # linearly anneal entropy_cost to this value when set
+    entropy_decay_fraction: float = 1.0      # fraction of total gradient steps used for the anneal
     logsumexp_cost: float = 0.1
     rep_size: int = 64
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
+    repetition_factor: int = 1  # CRTR: >1 repeats each sampled trajectory this many times in the batch (1 = plain CRL)
     num_blocks: int = 16
     hidden_dim: int = 256
+    scale_actor_residual_by_depth: bool = True  # keep deep actor residual stacks on the same scale as the 1-block baseline
+    use_non_residual_critic_encoders: bool = False  # use the SA/G encoder MLPs from crl_pd.py
     duration: int = 5
 
 @flax.struct.dataclass
@@ -210,6 +215,7 @@ class Transition(NamedTuple):
 class ResidualBlock(nn.Module):
     hidden_dim: int
     norm_type: str = "layer_norm"
+    residual_scale: float = 1.0
 
     @nn.compact
     def __call__(self, x):
@@ -222,11 +228,12 @@ class ResidualBlock(nn.Module):
             x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
             x = normalize(x)
             x = nn.swish(x)
-        return x + residual
+        return residual + self.residual_scale * x
 
 
 class SA_encoder(nn.Module):
     rep_size: int
+    residual: bool = True
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
@@ -238,12 +245,18 @@ class SA_encoder(nn.Module):
         normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
         x = jnp.concatenate([s, a], axis=-1)
-        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
+        if self.residual:
+            x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+            x = normalize(x)
+            x = nn.swish(x)
 
-        for _ in range(self.num_blocks):
-            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+            for _ in range(self.num_blocks):
+                x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+        else:
+            for _ in range(4):
+                x = nn.Dense(1024, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+                x = normalize(x)
+                x = nn.swish(x)
 
         x = nn.Dense(self.rep_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         return x
@@ -251,6 +264,7 @@ class SA_encoder(nn.Module):
 
 class G_encoder(nn.Module):
     rep_size: int
+    residual: bool = True
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
@@ -261,12 +275,19 @@ class G_encoder(nn.Module):
         bias_init = nn.initializers.zeros
         normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
-        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(g)
-        x = normalize(x)
-        x = nn.swish(x)
+        x = g
+        if self.residual:
+            x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+            x = normalize(x)
+            x = nn.swish(x)
 
-        for _ in range(self.num_blocks):
-            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+            for _ in range(self.num_blocks):
+                x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+        else:
+            for _ in range(4):
+                x = nn.Dense(1024, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+                x = normalize(x)
+                x = nn.swish(x)
 
         x = nn.Dense(self.rep_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         return x
@@ -277,6 +298,7 @@ class Actor(nn.Module):
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
+    scale_residual_by_depth: bool = True
 
     LOG_STD_MAX = 2
     LOG_STD_MIN = -5
@@ -292,8 +314,18 @@ class Actor(nn.Module):
         x = normalize(x)
         x = nn.swish(x)
 
+        # Keep deeper actors close to the 1-block initialization/gradient scale so
+        # the policy heads do not saturate as num_blocks grows.
+        branch_scale = 1.0
+        if self.scale_residual_by_depth and self.num_blocks > 1:
+            branch_scale = 1.0 / np.sqrt(self.num_blocks)
+
         for _ in range(self.num_blocks):
-            x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+            x = ResidualBlock(
+                hidden_dim=self.hidden_dim,
+                norm_type=self.norm_type,
+                residual_scale=branch_scale,
+            )(x)
 
         mean = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         log_std = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
@@ -338,11 +370,13 @@ def main(args: Args):
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
     args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps
     args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
+    num_sgd_steps_per_training_step = (args.rollout_length * args.num_envs) // args.num_envs
+    total_gradient_steps = args.num_training_step * num_sgd_steps_per_training_step
 
     print(f"Total number of training steps = {args.num_training_step}")
-    print(f"Total number of gradient steps per training step = { (args.rollout_length * args.num_envs) // args.num_envs}")
+    print(f"Total number of gradient steps per training step = {num_sgd_steps_per_training_step}")
     print(f"Total number of env steps per training step = {args.num_envs * args.rollout_length}")
-    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / ( args.rollout_length * args.num_envs // args.num_envs )}") 
+    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / num_sgd_steps_per_training_step}") 
 
     args.exp_name = f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}__{os.path.basename(__file__)[: -len('.py')]}__{int(time.time())}"
     
@@ -394,16 +428,32 @@ def main(args: Args):
 
     # Network setup
     # Actor
-    actor = Actor(action_size=action_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
+    actor = Actor(
+        action_size=action_size,
+        num_blocks=args.num_blocks,
+        hidden_dim=args.hidden_dim,
+        scale_residual_by_depth=args.scale_actor_residual_by_depth,
+    )
     actor_state = TrainState.create(
         apply_fn=actor.apply,
         params=actor.init(key_actor, np.ones([1, obs_size]), np.ones([1, args.rep_size])),
         tx=optax.adam(learning_rate=args.actor_learning_rate)
     )
     # Critic
-    sa_encoder = SA_encoder(rep_size=args.rep_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
+    residual_critic_encoders = not args.use_non_residual_critic_encoders
+    sa_encoder = SA_encoder(
+        rep_size=args.rep_size,
+        residual=residual_critic_encoders,
+        num_blocks=args.num_blocks,
+        hidden_dim=args.hidden_dim,
+    )
     sa_encoder_params = sa_encoder.init(key_sa, np.ones([1, obs_size]), np.ones([1, action_size]))
-    g_encoder = G_encoder(rep_size=args.rep_size, num_blocks=args.num_blocks, hidden_dim=args.hidden_dim)
+    g_encoder = G_encoder(
+        rep_size=args.rep_size,
+        residual=residual_critic_encoders,
+        num_blocks=args.num_blocks,
+        hidden_dim=args.hidden_dim,
+    )
     g_encoder_params = g_encoder.init(key_g, np.ones([1, goal_size]))
     critic_state = TrainState.create(
         apply_fn=None,
@@ -415,9 +465,15 @@ def main(args: Args):
     g_encoder.apply = jax.jit(g_encoder.apply)
 
     print(f'\nNumber of parameters in actor network are: {count_parameters(actor_state.params)} and the critic network are: {count_parameters(critic_state.params)}\n')
-    print(f'Network config: hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks} '
-          f'(actor blocks={actor.num_blocks}, sa_encoder blocks={sa_encoder.num_blocks}, g_encoder blocks={g_encoder.num_blocks}; '
-          f'actor width={actor.hidden_dim}, sa_encoder width={sa_encoder.hidden_dim}, g_encoder width={g_encoder.hidden_dim})\n')
+    critic_encoder_type = "non-residual (crl_pd)" if args.use_non_residual_critic_encoders else "residual"
+    if args.use_non_residual_critic_encoders:
+        critic_encoder_desc = "sa/g encoders = 4-layer MLP, width = 1024"
+    else:
+        critic_encoder_desc = f"sa/g encoders = {args.num_blocks} residual blocks, width = {args.hidden_dim}"
+    print(f'Network config: hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks}, '
+          f'critic_encoder_type = {critic_encoder_type}, '
+          f'scale_actor_residual_by_depth = {args.scale_actor_residual_by_depth} '
+          f'(actor blocks={actor.num_blocks}, actor width={actor.hidden_dim}; {critic_encoder_desc})\n')
 
     # Trainstate
     training_state = CRLTrainingState(
@@ -459,6 +515,25 @@ def main(args: Args):
     buffer_state = jax.jit(replay_buffer.init)(key_buffer)
 
     make_policy = make_inference_fn(actor, g_encoder)
+
+    entropy_cost_final = args.entropy_cost if args.entropy_cost_final is None else args.entropy_cost_final
+    entropy_decay_steps = max(1, int(total_gradient_steps * args.entropy_decay_fraction))
+
+    def get_entropy_cost(gradient_steps):
+        if args.entropy_cost_final is None:
+            return jnp.asarray(args.entropy_cost, dtype=jnp.float32)
+        progress = jnp.clip(gradient_steps / entropy_decay_steps, 0.0, 1.0)
+        entropy_cost = args.entropy_cost + progress * (entropy_cost_final - args.entropy_cost)
+        return jnp.asarray(entropy_cost, dtype=jnp.float32)
+
+    if args.entropy_cost_final is None:
+        print(f'Entropy config: fixed entropy_cost = {args.entropy_cost}\n')
+    else:
+        print(
+            f'Entropy config: entropy_cost anneals {args.entropy_cost} -> {entropy_cost_final} '
+            f'over {entropy_decay_steps} gradient steps '
+            f'({100 * args.entropy_decay_fraction:.1f}% of training)\n'
+        )
 
     # Initialize evaluators
     evaluator = Evaluator(
@@ -533,7 +608,7 @@ def main(args: Args):
 
     @jax.jit
     def update_actor_and_alpha(transitions, training_state, key):
-        def actor_loss(actor_params, critic_params, transitions, key):
+        def actor_loss(actor_params, critic_params, transitions, key, gradient_steps):
             state = transitions.observation
             goal = transitions.extras['future_goal']
             sa_encoder_params, g_encoder_params = jax.lax.stop_gradient(critic_params["sa_encoder"]), jax.lax.stop_gradient(critic_params["g_encoder"])
@@ -551,11 +626,24 @@ def main(args: Args):
             sa_repr = sa_encoder.apply(sa_encoder_params, state, action)
             qf_pi = -jnp.sqrt(jnp.sum((sa_repr - g_repr) ** 2, axis=-1))
 
-            actor_loss = jnp.mean( args.entropy_cost * log_prob - (qf_pi) )
+            entropy_cost = get_entropy_cost(gradient_steps)
+            entropy_loss = entropy_cost * log_prob
+            q_loss = -qf_pi
+            actor_loss = jnp.mean(entropy_loss + q_loss)
+            gaussian_entropy = jnp.sum(0.5 * (1.0 + jnp.log(2 * jnp.pi)) + log_stds, axis=-1)
 
-            return actor_loss, log_prob
+            return actor_loss, (log_prob, log_stds, means, action, qf_pi, entropy_cost, entropy_loss, q_loss, gaussian_entropy)
         
-        (actorloss, log_prob), actor_grad = jax.value_and_grad(actor_loss, has_aux=True)(training_state.actor_state.params, training_state.critic_state.params, transitions, key)
+        (
+            actorloss,
+            (log_prob, log_stds, means, action, qf_pi, entropy_cost, entropy_loss, q_loss, gaussian_entropy),
+        ), actor_grad = jax.value_and_grad(actor_loss, has_aux=True)(
+            training_state.actor_state.params,
+            training_state.critic_state.params,
+            transitions,
+            key,
+            training_state.gradient_steps,
+        )
         new_actor_state = training_state.actor_state.apply_gradients(grads=actor_grad)
 
         training_state = training_state.replace(actor_state=new_actor_state)
@@ -563,6 +651,16 @@ def main(args: Args):
         metrics = {
             "sample_entropy": -log_prob,
             "actor_loss": actorloss,
+            "actor_log_std": log_stds,
+            "actor_log_std_min": jnp.min(log_stds),
+            "actor_log_std_max": jnp.max(log_stds),
+            "actor_mean_abs": jnp.mean(jnp.abs(means), axis=-1),
+            "actor_action_abs": jnp.mean(jnp.abs(action), axis=-1),
+            "actor_q": qf_pi,
+            "actor_q_loss": q_loss,
+            "actor_entropy_loss": entropy_loss,
+            "actor_pre_tanh_entropy": gaussian_entropy,
+            "entropy_cost": entropy_cost,
         }
 
         return training_state, metrics
@@ -616,6 +714,14 @@ def main(args: Args):
         key, key_critic, key_actor, key_sampling1, key_sampling2 = jax.random.split(key, 5)
 
         buffer_state, transitions = replay_buffer.sample(buffer_state)
+        if args.repetition_factor > 1:
+            # CRTR: each unique trajectory appears `repetition_factor` times in the batch, so InfoNCE
+            # negatives include same-trajectory samples. The per-element keys below pick independent
+            # (anchor t0, future t1) for each repetition, matching the CRTR algorithm.
+            n_unique = transitions.observation.shape[0] // args.repetition_factor
+            transitions = jax.tree_util.tree_map(
+                lambda x: jnp.repeat(x[:n_unique], args.repetition_factor, axis=0), transitions
+            )
         batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
         transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
             (args.discount,), transitions, batch_keys
@@ -638,8 +744,7 @@ def main(args: Args):
     @jax.jit
     def learn_step(training_state, buffer_state, key):
 
-        num_sgd_steps = (args.rollout_length * args.num_envs) // args.num_envs
-        (training_state, buffer_state, _,), metrics = jax.lax.scan(sgd_step, (training_state, buffer_state, key), (), length=num_sgd_steps)
+        (training_state, buffer_state, _,), metrics = jax.lax.scan(sgd_step, (training_state, buffer_state, key), (), length=num_sgd_steps_per_training_step)
 
         return training_state, buffer_state, metrics
 
