@@ -140,7 +140,7 @@ class Args:
     agent: str = "crl"
     seed: int = 1
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    
+
     # logging and checkpointing
     track: bool = True
     wandb_project_name: str = "rl"
@@ -203,7 +203,7 @@ class CRLTrainingState:
     gradient_steps: np.ndarray
     actor_state: TrainState
     critic_state: TrainState
-    
+
 class Transition(NamedTuple):
     """Container for a transition"""
     observation: jnp.ndarray
@@ -334,23 +334,23 @@ class Actor(nn.Module):
 
         return mean, log_std
 
-    
+
 def make_inference_fn(policy_network, g_encoder_network):
     """Creates params and inference function for the CRL agent."""
     def make_policy(params, deterministic: bool = False):
 
         def policy(observations, goals, key_sample):
-            
+
             goals = g_encoder_network.apply(params['g_encoder'], goals)
             means, log_stds = policy_network.apply(params['actor'], observations, goals)
-                
+
             if deterministic:
                 return nn.tanh( means ), {}
-            
+
             stds = jnp.exp(log_stds)
             raw_actions = means + stds * jax.random.normal(key_sample, shape=means.shape, dtype=means.dtype)
             postprocessed_actions = nn.tanh(raw_actions)
-                
+
             log_prob = jax.scipy.stats.norm.logpdf(raw_actions, loc=means, scale=stds)
             log_prob -= jnp.log((1 - jnp.square(postprocessed_actions)) + 1e-6)
             log_prob = log_prob.sum(-1)
@@ -365,7 +365,7 @@ def make_inference_fn(policy_network, g_encoder_network):
     return make_policy
 
 def main(args: Args):
-     
+
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
     args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps
     args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
@@ -378,7 +378,7 @@ def main(args: Args):
     print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / num_sgd_steps_per_training_step}")
 
     args.exp_name = f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}__{os.path.basename(__file__)[: -len('.py')]}__{int(time.time())}"
-    
+
     # Initialize wandb if tracking is enabled
     if args.track:
         wandb.init(
@@ -395,7 +395,7 @@ def main(args: Args):
         if args.wandb_mode == 'offline':
             wandb_osh.set_log_level("ERROR")
             trigger_sync = TriggerWandbSyncHook()
-    
+
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, key_buffer, key_env, key_eval, key_actor, key_sa, key_g = jax.random.split(key, 7)
@@ -403,7 +403,7 @@ def main(args: Args):
     # Initialize environment
     env_class, default_config = make_env(args)
     env = wrap_env( env_class(config=default_config), default_config.episode_length )
-    eval_env = wrap_env( env_class(config=default_config), default_config.episode_length )  
+    eval_env = wrap_env( env_class(config=default_config), default_config.episode_length )
     episode_length = default_config.episode_length
 
     # Initialize checkpoint folder
@@ -493,14 +493,14 @@ def main(args: Args):
         extras={
             "state_extras": {
                 "traj_id": 0.0,
-            }        
+            }
         },
     )
     def jit_wrap(buffer):
         buffer.insert = jax.jit(buffer.insert)
         buffer.sample = jax.jit(buffer.sample)
         return buffer
-    
+
     replay_buffer = jit_wrap(
             TrajectoryUniformSamplingQueue(
                 max_replay_size=args.max_replay_size,
@@ -550,7 +550,7 @@ def main(args: Args):
         means, log_stds = actor.apply(training_state.actor_state.params, env_state.obs, g_repr)
         stds = jnp.exp(log_stds)
         actions = nn.tanh( means + stds * jax.random.normal(key, shape=means.shape, dtype=means.dtype) )
-        
+
         next_env_state = env.step(env_state, actions)
 
         state_extras = {x: next_env_state.info[x] for x in extra_fields}
@@ -562,7 +562,7 @@ def main(args: Args):
                                             action=actions,
                                             extras={"state_extras": state_extras},
                                         ), metrics
-    
+
     @jax.jit
     def data_collect_step(training_state, env_state, buffer_state, key):
         @jax.jit
@@ -570,10 +570,10 @@ def main(args: Args):
             training_state, env_state, current_key = carry
             current_key, next_key = jax.random.split(current_key)
             training_state, env_state, transition, metrics = actor_step(
-                training_state, 
-                env, 
-                env_state, 
-                current_key, 
+                training_state,
+                env,
+                env_state,
+                current_key,
                 extra_fields=("traj_id",),
                 metrics_fields=log_data_metric_keys,
             )
@@ -610,7 +610,7 @@ def main(args: Args):
             state = transitions.observation
             goal = transitions.extras['future_goal']
             sa_encoder_params, g_encoder_params = jax.lax.stop_gradient(critic_params["sa_encoder"]), jax.lax.stop_gradient(critic_params["g_encoder"])
-            
+
             g_repr = g_encoder.apply(g_encoder_params, goal)
 
             means, log_stds = actor.apply(actor_params, state, g_repr)
@@ -631,7 +631,7 @@ def main(args: Args):
             gaussian_entropy = jnp.sum(0.5 * (1.0 + jnp.log(2 * jnp.pi)) + log_stds, axis=-1)
 
             return actor_loss, (log_prob, log_stds, means, action, qf_pi, entropy_cost, entropy_loss, q_loss, gaussian_entropy)
-        
+
         (
             actorloss,
             (log_prob, log_stds, means, action, qf_pi, entropy_cost, entropy_loss, q_loss, gaussian_entropy),
@@ -662,23 +662,23 @@ def main(args: Args):
         }
 
         return training_state, metrics
-    
+
     @jax.jit
     def update_critic(transitions, training_state, key):
         def critic_loss(critic_params, transitions, key):
             sa_encoder_params, g_encoder_params = critic_params["sa_encoder"], critic_params["g_encoder"]
-            
+
             state = transitions.observation
             action = transitions.action
             goal = transitions.extras['future_goal']
-            
+
             sa_repr = sa_encoder.apply(sa_encoder_params, state, action)
             g_repr = g_encoder.apply(g_encoder_params, goal)
-            
+
             # InfoNCE
             logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1)) #shape = BxB
 
-            critic_loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1)) 
+            critic_loss = -jnp.mean(jnp.diag(logits) - jax.nn.logsumexp(logits, axis=1))
 
             # logsumexp regularisation
             logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
@@ -690,7 +690,7 @@ def main(args: Args):
             logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
 
             return critic_loss, (logsumexp, correct, logits_pos, logits_neg)
-            
+
         (loss, (logsumexp, correct, logits_pos, logits_neg)), grad = jax.value_and_grad(critic_loss, has_aux=True)(training_state.critic_state.params, transitions, key)
         new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
         training_state = training_state.replace(critic_state = new_critic_state)
@@ -704,7 +704,7 @@ def main(args: Args):
         }
 
         return training_state, metrics
-    
+
     @jax.jit
     def sgd_step(carry, transitions):
         training_state, buffer_state, key = carry
@@ -736,7 +736,7 @@ def main(args: Args):
         metrics = {}
         metrics.update(actor_metrics)
         metrics.update(critic_metrics)
-        
+
         return (training_state, buffer_state, key,), metrics
 
     @jax.jit
@@ -766,7 +766,7 @@ def main(args: Args):
         data_collect_start = time.time()
         training_state, env_state, buffer_state, data_metrics = data_collect_step(training_state, env_state, buffer_state, key_generate_rollout)
         data_collect_step_time += time.time() - data_collect_start
-        
+
         learn_step_start = time.time()
         training_state, buffer_state, training_metrics = learn_step(training_state, buffer_state, key_sgd)
         learn_step_time += time.time() - learn_step_start
@@ -777,7 +777,7 @@ def main(args: Args):
             metrics = jax.tree_util.tree_map(
                 lambda x, y: x + y, metrics, (data_metrics | training_metrics)
             )
-        
+
         if args.num_reset_steps > 0 and ts % args.num_training_steps_per_real_reset == 0:
             key_env, key = jax.random.split(key, 2)
             key_envs = jax.random.split(key_env, args.num_envs)
@@ -785,14 +785,14 @@ def main(args: Args):
 
         if ts % args.num_training_steps_per_eval == 0:
             es = ts // args.num_training_steps_per_eval
-            
+
             metrics = jax.tree_util.tree_map(
                 lambda x: x / args.num_training_steps_per_eval, metrics
             )
             metrics = jax.tree_util.tree_map(jnp.mean, metrics)
             jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
 
-            training_step_time = time.time() - xt            
+            training_step_time = time.time() - xt
             training_walltime += training_step_time
 
             sps = (
@@ -945,7 +945,7 @@ def main(args: Args):
 
     if args.track:
         wandb.finish()
-            
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     main(args)

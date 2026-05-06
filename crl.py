@@ -34,11 +34,91 @@ from typing import NamedTuple
 from wandb_osh.hooks import TriggerWandbSyncHook
 
 from utils.wrapper import wrap_env
-from utils.evaluation import Evaluator
+from utils.evaluation import Evaluator, get_video
 from utils.networks import MLP, save_params
 from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
+
+
+def save_gif(frames, path, fps=10):
+    from PIL import Image
+    imgs = [Image.fromarray(np.asarray(f).astype(np.uint8)) for f in frames]
+    duration_ms = max(1, int(round(1000 / fps)))
+    imgs[0].save(
+        path,
+        save_all=True,
+        append_images=imgs[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+
+
+def render_cube_positions(env, cube_pos_vec, mocap_pos_vec=None):
+    """Render a (num_cubes*3,) cube-position vector as a mujoco scene."""
+    num_cubes = env._config.num_cubes
+    qpos = np.array(env._init_q, copy=True)
+    qpos[np.asarray(env._objs_pos_qpos_idxs)] = np.asarray(cube_pos_vec).reshape(-1)
+    qvel = np.zeros_like(np.array(env._init_v))
+    if mocap_pos_vec is None:
+        mocap_pos = np.tile(np.array([10.0, 10.0, 10.0]), num_cubes)
+    else:
+        mocap_pos = np.asarray(mocap_pos_vec).reshape(-1)
+    identity_quats = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), num_cubes)
+    return env.render_from_info(qpos, qvel, mocap_pos, identity_quats)
+
+
+def visualize_crl_batch(env, achieved_goals, future_goals, num_anchors=4, num_negatives=4):
+    """Render anchor, positive, and negative goals from a CRL minibatch."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    achieved = np.asarray(achieved_goals)
+    future = np.asarray(future_goals)
+    B = achieved.shape[0]
+    num_anchors = min(num_anchors, B)
+    num_negatives = min(num_negatives, B - 1)
+
+    goal_cache = {}
+    def render_goal(j):
+        if j not in goal_cache:
+            goal_cache[j] = render_cube_positions(env, future[j])
+        return goal_cache[j]
+
+    print("[sample viz] anchor -> {positive, neg...} L2 distances (cube XYZ):")
+    ncols = 2 + num_negatives
+    fig, axes = plt.subplots(num_anchors, ncols, figsize=(2.4 * ncols, 2.4 * num_anchors), squeeze=False)
+    for i in range(num_anchors):
+        axes[i, 0].imshow(render_cube_positions(env, achieved[i], mocap_pos_vec=future[i]))
+        axes[i, 0].set_ylabel(f"sample {i}")
+        axes[i, 0].set_xticks([])
+        axes[i, 0].set_yticks([])
+
+        d_pos = float(np.linalg.norm(achieved[i] - future[i]))
+        axes[i, 1].imshow(render_goal(i))
+        axes[i, 1].set_title(f"pos  delta={d_pos:.3f}")
+        axes[i, 1].set_xticks([])
+        axes[i, 1].set_yticks([])
+
+        neg_idxs = [j for j in range(B) if j != i][:num_negatives]
+        neg_dists = []
+        for k, j in enumerate(neg_idxs):
+            d_neg = float(np.linalg.norm(achieved[i] - future[j]))
+            neg_dists.append(d_neg)
+            axes[i, 2 + k].imshow(render_goal(j))
+            axes[i, 2 + k].set_title(f"neg{k} delta={d_neg:.3f}")
+            axes[i, 2 + k].set_xticks([])
+            axes[i, 2 + k].set_yticks([])
+
+        print(f"  sample {i}: pos={d_pos:.4f}  negs={['%.4f' % d for d in neg_dists]}")
+
+        if i == 0:
+            axes[i, 0].set_title("anchor (cubes) + positive (mocap)")
+    fig.tight_layout()
+    return fig
+
 
 @dataclass
 class Args:
@@ -48,9 +128,9 @@ class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     
     # logging and checkpointing
-    track: bool = False
-    wandb_project_name: str = "builderbench"
-    wandb_entity: str = 'raj19'
+    track: bool = True
+    wandb_project_name: str = "rl"
+    wandb_entity: str = 'david-yan'
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -60,6 +140,17 @@ class Args:
     num_reset_steps: int = 50             # number of times to call true resets (env.reset) instead of soft resets (AutoResetWrapper)
 
     save_checkpoint: bool = True
+
+    # eval-time video recording
+    record_videos: bool = True            # render one eval episode per eval step
+    video_every_n_evals: int = 1          # record every N eval steps (1 = every eval)
+    video_fps: int = 10
+
+    # training-sample visualization (anchor / positive / negatives from CRL batch)
+    visualize_samples: bool = True
+    viz_every_n_evals: int = 1
+    viz_num_anchors: int = 4
+    viz_num_negatives: int = 4
 
     # environment
     env_id: str = 'creative-1-task1'
@@ -83,6 +174,7 @@ class Args:
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
+    repetition_factor: int = 1  # CRTR: >1 repeats each sampled trajectory this many times in the batch (1 = plain CRL)
 
 @flax.struct.dataclass
 class CRLTrainingState:
@@ -509,6 +601,14 @@ def main(args: Args):
         key, key_critic, key_actor, key_sampling1, key_sampling2 = jax.random.split(key, 5)
 
         buffer_state, transitions = replay_buffer.sample(buffer_state)
+        if args.repetition_factor > 1:
+            # CRTR: each unique trajectory appears `repetition_factor` times in the batch, so InfoNCE
+            # negatives include same-trajectory samples. The per-element keys below pick independent
+            # (anchor t0, future t1) for each repetition, matching the CRTR algorithm.
+            n_unique = transitions.observation.shape[0] // args.repetition_factor
+            transitions = jax.tree_util.tree_map(
+                lambda x: jnp.repeat(x[:n_unique], args.repetition_factor, axis=0), transitions
+            )
         batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
         transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
             (args.discount,), transitions, batch_keys
@@ -605,10 +705,79 @@ def main(args: Args):
                 training_metrics=metrics,
             )
 
+            video_path_file = None
+            if args.record_videos and es % max(1, args.video_every_n_evals) == 0:
+                try:
+                    key, video_key = jax.random.split(key, 2)
+                    policy_params = {
+                        "actor": training_state.actor_state.params,
+                        "g_encoder": training_state.critic_state.params["g_encoder"],
+                    }
+                    inference_fn = make_policy(policy_params, deterministic=True)
+                    video_frames = get_video(args.env_id, inference_fn, eval_env, video_key, episode_length)
+                    if args.save_checkpoint:
+                        video_dir = f"{save_path}/videos"
+                        os.makedirs(video_dir, exist_ok=True)
+                        video_path_file = f"{video_dir}/eval_{es}.gif"
+                        save_gif(video_frames, video_path_file, fps=args.video_fps)
+                        print(f"Saved eval video to {video_path_file}")
+                except Exception as e:
+                    print(f"Video recording failed at eval {es}: {e}")
+                    video_path_file = None
+
+            viz_path_file = None
+            if args.visualize_samples and args.save_checkpoint and es % max(1, args.viz_every_n_evals) == 0:
+                try:
+                    key, viz_key = jax.random.split(key, 2)
+                    k_flatten, k_idx = jax.random.split(viz_key, 2)
+                    _, viz_trans = replay_buffer.sample(buffer_state)
+                    batch_keys = jax.random.split(k_flatten, viz_trans.observation.shape[0])
+                    viz_trans = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
+                        (args.discount,), viz_trans, batch_keys
+                    )
+                    random_indices = jax.random.randint(
+                        k_idx,
+                        (viz_trans.action.shape[0],),
+                        minval=0,
+                        maxval=viz_trans.action.shape[1],
+                    )
+                    viz_trans = jax.tree_util.tree_map(
+                        lambda x: x[jnp.arange(x.shape[0]), random_indices], viz_trans
+                    )
+                    achieved_np = np.asarray(viz_trans.achieved_goal)
+                    future_np = np.asarray(viz_trans.extras["future_goal"])
+                    fig = visualize_crl_batch(
+                        eval_env,
+                        achieved_np,
+                        future_np,
+                        num_anchors=args.viz_num_anchors,
+                        num_negatives=args.viz_num_negatives,
+                    )
+                    viz_dir = f"{save_path}/sample_viz"
+                    os.makedirs(viz_dir, exist_ok=True)
+                    viz_path_file = f"{viz_dir}/samples_{es}.png"
+                    fig.savefig(viz_path_file, dpi=100, bbox_inches="tight")
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
+                    print(f"Saved sample viz to {viz_path_file}")
+                except Exception as e:
+                    print(f"Sample viz failed at eval {es}: {e}")
+                    viz_path_file = None
+
             print(f'\nEvaluation step {es}:\n')
             pprint.pprint(metrics)
             if args.track:
                 wandb.log(metrics, step=es)
+                if video_path_file is not None and os.path.exists(video_path_file):
+                    try:
+                        wandb.log({"eval/video": wandb.Video(video_path_file, fps=args.video_fps, format="gif")}, step=es)
+                    except Exception as e:
+                        print(f"wandb video log failed at eval {es}: {e}")
+                if viz_path_file is not None and os.path.exists(viz_path_file):
+                    try:
+                        wandb.log({"train/samples": wandb.Image(viz_path_file)}, step=es)
+                    except Exception as e:
+                        print(f"wandb sample viz log failed at eval {es}: {e}")
                 if args.wandb_mode == 'offline':
                     trigger_sync()
 
