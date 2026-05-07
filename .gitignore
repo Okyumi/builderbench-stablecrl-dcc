@@ -9,3 +9,7 @@ MUJOCO_LOG.txt
 ml4rl/
 tmp/
 results/
+tea_debug.log
+sweep.sh
+.jax_cache
+.claude/
