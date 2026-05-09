@@ -170,7 +170,7 @@ class Args:
 
     # environment
     env_id: str = 'creative-1-task1'
-    num_envs: int = 1024
+    num_envs: int = 256
     num_eval_envs: int = 128
     env_early_termination: bool = False # note!
     env_episode_length: int = None
@@ -184,15 +184,19 @@ class Args:
     actor_learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     discount: float = 0.99
-    entropy_cost: float = 0.1
+    entropy_cost: float = 0.01
     logsumexp_cost: float = 0.1
     rep_size: int = 64
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
-    num_blocks: int = 16
-    hidden_dim: int = 256
+    num_blocks: int = 3
+    hidden_dim: int = 512
     duration: int = 5
+    # Option B: keep total batch ~constant; use num_envs//R trajectories per SGD
+    # batch and take R timesteps from each, so each anchor sees R-1 in-trajectory
+    # negatives in the InfoNCE matrix.
+    repetition_factor: int = 12
 
     # complexity-aware CRL goal sampling
     complexity_goal_sampling: bool = True
@@ -462,6 +466,13 @@ def main(args: Args):
     assert goal_size % 3 == 0, "Complexity goal sampling expects achieved_goal to contain block XYZ positions."
     num_goal_blocks = goal_size // 3
 
+    assert args.repetition_factor >= 1, "repetition_factor must be >= 1"
+    assert args.num_envs >= args.repetition_factor, (
+        f"num_envs ({args.num_envs}) must be >= repetition_factor ({args.repetition_factor})"
+    )
+    num_traj_per_batch = args.num_envs // args.repetition_factor
+    contrastive_batch_size = num_traj_per_batch * args.repetition_factor
+
     log_data_metric_keys = []
     for k in ("obj_reached_once", "obj_lifted", "obj_moved"):
         if k in env_state.metrics.keys():
@@ -497,6 +508,11 @@ def main(args: Args):
     print(f'Goal sampling: complexity={args.complexity_goal_sampling}, alpha={args.goal_complexity_alpha}, '
           f'beta={args.goal_complexity_beta}, block_threshold={args.goal_complexity_block_threshold}, '
           f'max_mix={args.goal_complexity_max_mix}, warmup_steps={args.goal_complexity_warmup_steps}\n')
+    print(f'Repetition sampling: trajectories per SGD batch = {num_traj_per_batch}, '
+          f'timesteps per trajectory = {args.repetition_factor}, '
+          f'InfoNCE batch size = {contrastive_batch_size} '
+          f'(in-trajectory negatives per anchor = {args.repetition_factor - 1}, '
+          f'cross-trajectory negatives = {(num_traj_per_batch - 1) * args.repetition_factor})\n')
 
     # Trainstate
     training_state = CRLTrainingState(
@@ -695,7 +711,11 @@ def main(args: Args):
         key, key_critic, key_actor, key_sampling1, key_sampling2 = jax.random.split(key, 5)
 
         buffer_state, transitions = replay_buffer.sample(buffer_state)
-        batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
+        # Option B: keep contrastive batch size ~constant by using fewer trajectories
+        # but R timesteps per trajectory. The buffer already returns trajectories in
+        # randomized env-column order, so a leading slice is an unbiased subset.
+        transitions = jax.tree_util.tree_map(lambda x: x[:num_traj_per_batch], transitions)
+        batch_keys = jax.random.split(key_sampling1, num_traj_per_batch)
         if args.complexity_goal_sampling:
             transitions = jax.vmap(flatten_crl_complexity_fn, in_axes=(None, 0, 0, None))(
                 (
@@ -715,8 +735,18 @@ def main(args: Args):
             transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
                 (args.discount,), transitions, batch_keys
             )
-        random_indices = jax.random.randint(key_sampling2, (transitions.action.shape[0],), minval=0, maxval=transitions.action.shape[1])
-        transitions = jax.tree_util.tree_map(lambda x: x[jnp.arange(x.shape[0]), random_indices], transitions)
+        # Pick R timesteps per trajectory; flatten to a (B*R, *) batch for InfoNCE.
+        random_indices = jax.random.randint(
+            key_sampling2,
+            (num_traj_per_batch, args.repetition_factor),
+            minval=0,
+            maxval=transitions.action.shape[1],
+        )
+        traj_idx = jnp.arange(num_traj_per_batch)[:, None]
+        def _gather_repeats(x):
+            gathered = x[traj_idx, random_indices]
+            return gathered.reshape((contrastive_batch_size,) + x.shape[2:])
+        transitions = jax.tree_util.tree_map(_gather_repeats, transitions)
 
         training_state, actor_metrics = update_actor_and_alpha(transitions, training_state, key_actor)
 
@@ -840,7 +870,8 @@ def main(args: Args):
                     k_flatten, k_idx = jax.random.split(viz_key, 2)
                     # Sample a batch exactly like sgd_step, but only for visualization.
                     _, viz_trans = replay_buffer.sample(buffer_state)
-                    batch_keys = jax.random.split(k_flatten, viz_trans.observation.shape[0])
+                    viz_trans = jax.tree_util.tree_map(lambda x: x[:num_traj_per_batch], viz_trans)
+                    batch_keys = jax.random.split(k_flatten, num_traj_per_batch)
                     if args.complexity_goal_sampling:
                         viz_trans = jax.vmap(flatten_crl_complexity_fn, in_axes=(None, 0, 0, None))(
                             (
@@ -861,11 +892,16 @@ def main(args: Args):
                             (args.discount,), viz_trans, batch_keys
                         )
                     random_indices = jax.random.randint(
-                        k_idx, (viz_trans.action.shape[0],),
+                        k_idx,
+                        (num_traj_per_batch, args.repetition_factor),
                         minval=0, maxval=viz_trans.action.shape[1],
                     )
+                    viz_traj_idx = jnp.arange(num_traj_per_batch)[:, None]
                     viz_trans = jax.tree_util.tree_map(
-                        lambda x: x[jnp.arange(x.shape[0]), random_indices], viz_trans
+                        lambda x: x[viz_traj_idx, random_indices].reshape(
+                            (contrastive_batch_size,) + x.shape[2:]
+                        ),
+                        viz_trans,
                     )
                     achieved_np = np.asarray(viz_trans.achieved_goal)
                     future_np = np.asarray(viz_trans.extras["future_goal"])
