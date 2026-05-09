@@ -196,6 +196,7 @@ class Args:
     scale_actor_residual_by_depth: bool = True  # keep deep actor residual stacks on the same scale as the 1-block baseline
     scale_critic_residual_by_depth: bool = True  # keep deep critic encoder residual stacks on the same scale as the 1-block baseline
     use_non_residual_critic_encoders: bool = False  # use the SA/G encoder MLPs from crl_pd.py
+    use_pd: bool = True
     duration: int = 5
 
 @flax.struct.dataclass
@@ -422,10 +423,17 @@ def main(args: Args):
 
     # Initialize environment
     env_class, default_config = make_env(args)
-    assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
-    episode_length = default_config.episode_length // args.duration
-    env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
-    eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
+    if args.use_pd:
+        assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
+        episode_length = default_config.episode_length // args.duration
+        env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
+        eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
+        print(f"Control mode: PD waypoint controls (duration={args.duration})")
+    else:
+        episode_length = default_config.episode_length
+        env = wrap_env(env_class(config=default_config), episode_length)
+        eval_env = wrap_env(env_class(config=default_config), episode_length)
+        print("Control mode: raw controls")
 
     # Initialize checkpoint folder
     if args.save_checkpoint:

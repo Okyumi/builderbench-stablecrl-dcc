@@ -182,6 +182,7 @@ class Args:
     diagnostic: bool = False
     repetition_factor: int = 1  # CRTR: >1 repeats each sampled trajectory this many times in the batch (1 = plain CRL)
 
+    use_pd: bool = True
     duration: int = 5
 
 @flax.struct.dataclass
@@ -366,10 +367,17 @@ def main(args: Args):
 
     # Initialize environment
     env_class, default_config = make_env(args)
-    assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
-    episode_length = default_config.episode_length // args.duration
-    env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
-    eval_env = wrap_env( PDWrapper( env_class(config=default_config), duration=args.duration ), episode_length )
+    if args.use_pd:
+        assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
+        episode_length = default_config.episode_length // args.duration
+        env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
+        eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
+        print(f"Control mode: PD waypoint controls (duration={args.duration})")
+    else:
+        episode_length = default_config.episode_length
+        env = wrap_env(env_class(config=default_config), episode_length)
+        eval_env = wrap_env(env_class(config=default_config), episode_length)
+        print("Control mode: raw controls")
 
     # Initialize checkpoint folder
     if args.save_checkpoint:

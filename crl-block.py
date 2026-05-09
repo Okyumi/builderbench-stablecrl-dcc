@@ -194,6 +194,7 @@ class Args:
     num_blocks: int = 16
     hidden_dim: int = 256
     scale_actor_residual_by_depth: bool = True  # keep deep actor residual stacks on the same scale as the 1-block baseline
+    scale_critic_residual_by_depth: bool = True  # keep deep critic encoder residual stacks on the same scale as the 1-block baseline
     use_non_residual_critic_encoders: bool = False  # use the SA/G encoder MLPs from crl_pd.py
 
 @flax.struct.dataclass
@@ -236,6 +237,7 @@ class SA_encoder(nn.Module):
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
+    scale_residual_by_depth: bool = True
 
     @nn.compact
     def __call__(self, s: jnp.ndarray, a: jnp.ndarray):
@@ -249,8 +251,16 @@ class SA_encoder(nn.Module):
             x = normalize(x)
             x = nn.swish(x)
 
+            branch_scale = 1.0
+            if self.scale_residual_by_depth and self.num_blocks > 1:
+                branch_scale = 1.0 / np.sqrt(self.num_blocks)
+
             for _ in range(self.num_blocks):
-                x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+                x = ResidualBlock(
+                    hidden_dim=self.hidden_dim,
+                    norm_type=self.norm_type,
+                    residual_scale=branch_scale,
+                )(x)
         else:
             for _ in range(4):
                 x = nn.Dense(1024, kernel_init=lecun_uniform, bias_init=bias_init)(x)
@@ -267,6 +277,7 @@ class G_encoder(nn.Module):
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
+    scale_residual_by_depth: bool = True
 
     @nn.compact
     def __call__(self, g: jnp.ndarray):
@@ -280,8 +291,16 @@ class G_encoder(nn.Module):
             x = normalize(x)
             x = nn.swish(x)
 
+            branch_scale = 1.0
+            if self.scale_residual_by_depth and self.num_blocks > 1:
+                branch_scale = 1.0 / np.sqrt(self.num_blocks)
+
             for _ in range(self.num_blocks):
-                x = ResidualBlock(hidden_dim=self.hidden_dim, norm_type=self.norm_type)(x)
+                x = ResidualBlock(
+                    hidden_dim=self.hidden_dim,
+                    norm_type=self.norm_type,
+                    residual_scale=branch_scale,
+                )(x)
         else:
             for _ in range(4):
                 x = nn.Dense(1024, kernel_init=lecun_uniform, bias_init=bias_init)(x)
@@ -444,6 +463,7 @@ def main(args: Args):
         residual=residual_critic_encoders,
         num_blocks=args.num_blocks,
         hidden_dim=args.hidden_dim,
+        scale_residual_by_depth=args.scale_critic_residual_by_depth,
     )
     sa_encoder_params = sa_encoder.init(key_sa, np.ones([1, obs_size]), np.ones([1, action_size]))
     g_encoder = G_encoder(
@@ -451,6 +471,7 @@ def main(args: Args):
         residual=residual_critic_encoders,
         num_blocks=args.num_blocks,
         hidden_dim=args.hidden_dim,
+        scale_residual_by_depth=args.scale_critic_residual_by_depth,
     )
     g_encoder_params = g_encoder.init(key_g, np.ones([1, goal_size]))
     critic_state = TrainState.create(
@@ -470,7 +491,8 @@ def main(args: Args):
         critic_encoder_desc = f"sa/g encoders = {args.num_blocks} residual blocks, width = {args.hidden_dim}"
     print(f'Network config: hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks}, '
           f'critic_encoder_type = {critic_encoder_type}, '
-          f'scale_actor_residual_by_depth = {args.scale_actor_residual_by_depth} '
+          f'scale_actor_residual_by_depth = {args.scale_actor_residual_by_depth}, '
+          f'scale_critic_residual_by_depth = {args.scale_critic_residual_by_depth} '
           f'(actor blocks={actor.num_blocks}, actor width={actor.hidden_dim}; {critic_encoder_desc})\n')
 
     # Trainstate

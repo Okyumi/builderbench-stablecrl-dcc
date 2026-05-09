@@ -57,6 +57,7 @@ class Args:
     # environment
     env_id: str = 'creative-1-task1'
     num_envs: int = 2048
+    use_pd: bool = True
     pd_duration: int = 5
     num_eval_envs: int = 128
     env_early_termination: bool = False
@@ -213,9 +214,17 @@ def main(args: Args):
 
     # Initialize environment
     env_class, default_config = make_env(args)
-    episode_length = (args.env_episode_length or default_config.episode_length) // args.pd_duration
-    env = wrap_env( PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length )
-    eval_env = wrap_env( PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length )
+    if args.use_pd:
+        assert default_config.episode_length % args.pd_duration == 0, "Environment episode length must be divisible by pd_duration"
+        episode_length = default_config.episode_length // args.pd_duration
+        env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length)
+        eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length)
+        print(f"Control mode: PD waypoint controls (duration={args.pd_duration})")
+    else:
+        episode_length = default_config.episode_length
+        env = wrap_env(env_class(config=default_config), episode_length)
+        eval_env = wrap_env(env_class(config=default_config), episode_length)
+        print("Control mode: raw controls")
 
     # Initialize checkpoint folder
     if args.save_checkpoint:
