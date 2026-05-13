@@ -30,7 +30,7 @@ from flax.training.train_state import TrainState
 from flax.linen.initializers import variance_scaling
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from wandb_osh.hooks import TriggerWandbSyncHook
 
 from utils.wrapper import wrap_env, PDWrapper
@@ -187,17 +187,18 @@ class Args:
     entropy_decay_fraction: float = 1.0      # fraction of total gradient steps used for the anneal
     logsumexp_cost: float = 0.1
     rep_size: int = 64
+    architecture: Literal["block", "default"] = "block"  # "default" matches the actor/critic MLPs in crl.py
     max_replay_size: int = 10000
     min_replay_size: int = 1000
     diagnostic: bool = False
     repetition_factor: int = 1  # CRTR: >1 repeats each sampled trajectory this many times in the batch (1 = plain CRL)
-    num_blocks: int = 16
-    hidden_dim: int = 256
+    num_blocks: int = 8
+    hidden_dim: int = 1024
     scale_actor_residual_by_depth: bool = True  # keep deep actor residual stacks on the same scale as the 1-block baseline
     scale_critic_residual_by_depth: bool = True  # keep deep critic encoder residual stacks on the same scale as the 1-block baseline
-    use_non_residual_critic_encoders: bool = False  # use the SA/G encoder MLPs from crl_pd.py
+    use_non_residual_critic_encoders: bool = False  # block architecture only: use the SA/G encoder MLPs from crl.py
     use_pd: bool = True
-    duration: int = 5
+    pd_duration: int = 5
 
 @flax.struct.dataclass
 class CRLTrainingState:
@@ -315,6 +316,7 @@ class G_encoder(nn.Module):
 
 class Actor(nn.Module):
     action_size: int
+    residual: bool = True
     num_blocks: int = 1
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
@@ -330,22 +332,28 @@ class Actor(nn.Module):
         normalize = (lambda y: nn.LayerNorm()(y)) if self.norm_type == "layer_norm" else (lambda y: y)
 
         x = jnp.concatenate([s, g_repr], axis=-1)
-        x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
-        x = normalize(x)
-        x = nn.swish(x)
+        if self.residual:
+            x = nn.Dense(self.hidden_dim, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+            x = normalize(x)
+            x = nn.swish(x)
 
-        # Keep deeper actors close to the 1-block initialization/gradient scale so
-        # the policy heads do not saturate as num_blocks grows.
-        branch_scale = 1.0
-        if self.scale_residual_by_depth and self.num_blocks > 1:
-            branch_scale = 1.0 / np.sqrt(self.num_blocks)
+            # Keep deeper actors close to the 1-block initialization/gradient scale so
+            # the policy heads do not saturate as num_blocks grows.
+            branch_scale = 1.0
+            if self.scale_residual_by_depth and self.num_blocks > 1:
+                branch_scale = 1.0 / np.sqrt(self.num_blocks)
 
-        for _ in range(self.num_blocks):
-            x = ResidualBlock(
-                hidden_dim=self.hidden_dim,
-                norm_type=self.norm_type,
-                residual_scale=branch_scale,
-            )(x)
+            for _ in range(self.num_blocks):
+                x = ResidualBlock(
+                    hidden_dim=self.hidden_dim,
+                    norm_type=self.norm_type,
+                    residual_scale=branch_scale,
+                )(x)
+        else:
+            for _ in range(4):
+                x = nn.Dense(1024, kernel_init=lecun_uniform, bias_init=bias_init)(x)
+                x = normalize(x)
+                x = nn.swish(x)
 
         mean = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
         log_std = nn.Dense(self.action_size, kernel_init=lecun_uniform, bias_init=bias_init)(x)
@@ -424,11 +432,11 @@ def main(args: Args):
     # Initialize environment
     env_class, default_config = make_env(args)
     if args.use_pd:
-        assert default_config.episode_length % args.duration == 0, "Environment episode length must be divisible by duration"
-        episode_length = default_config.episode_length // args.duration
-        env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
-        eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.duration), episode_length)
-        print(f"Control mode: PD waypoint controls (duration={args.duration})")
+        assert default_config.episode_length % args.pd_duration == 0, "Environment episode length must be divisible by pd_duration"
+        episode_length = default_config.episode_length // args.pd_duration
+        env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length)
+        eval_env = wrap_env(PDWrapper(env_class(config=default_config), duration=args.pd_duration), episode_length)
+        print(f"Control mode: PD waypoint controls (pd_duration={args.pd_duration})")
     else:
         episode_length = default_config.episode_length
         env = wrap_env(env_class(config=default_config), episode_length)
@@ -453,36 +461,49 @@ def main(args: Args):
             log_data_metric_keys.append(k)
     log_data_metric_keys = tuple(log_data_metric_keys)
 
+    if args.architecture not in ("block", "default"):
+        raise ValueError(f"Unknown architecture {args.architecture!r}; expected 'block' or 'default'.")
+
     # Network setup
     # Actor
-    actor = Actor(
-        action_size=action_size,
-        num_blocks=args.num_blocks,
-        hidden_dim=args.hidden_dim,
-        scale_residual_by_depth=args.scale_actor_residual_by_depth,
-    )
+    if args.architecture == "default":
+        actor = Actor(action_size=action_size, residual=False)
+    else:
+        actor = Actor(
+            action_size=action_size,
+            residual=True,
+            num_blocks=args.num_blocks,
+            hidden_dim=args.hidden_dim,
+            scale_residual_by_depth=args.scale_actor_residual_by_depth,
+        )
     actor_state = TrainState.create(
         apply_fn=actor.apply,
         params=actor.init(key_actor, np.ones([1, obs_size]), np.ones([1, args.rep_size])),
         tx=optax.adam(learning_rate=args.actor_learning_rate)
     )
     # Critic
-    residual_critic_encoders = not args.use_non_residual_critic_encoders
-    sa_encoder = SA_encoder(
-        rep_size=args.rep_size,
-        residual=residual_critic_encoders,
-        num_blocks=args.num_blocks,
-        hidden_dim=args.hidden_dim,
-        scale_residual_by_depth=args.scale_critic_residual_by_depth,
-    )
+    if args.architecture == "default":
+        sa_encoder = SA_encoder(rep_size=args.rep_size, residual=False)
+    else:
+        residual_critic_encoders = not args.use_non_residual_critic_encoders
+        sa_encoder = SA_encoder(
+            rep_size=args.rep_size,
+            residual=residual_critic_encoders,
+            num_blocks=args.num_blocks,
+            hidden_dim=args.hidden_dim,
+            scale_residual_by_depth=args.scale_critic_residual_by_depth,
+        )
     sa_encoder_params = sa_encoder.init(key_sa, np.ones([1, obs_size]), np.ones([1, action_size]))
-    g_encoder = G_encoder(
-        rep_size=args.rep_size,
-        residual=residual_critic_encoders,
-        num_blocks=args.num_blocks,
-        hidden_dim=args.hidden_dim,
-        scale_residual_by_depth=args.scale_critic_residual_by_depth,
-    )
+    if args.architecture == "default":
+        g_encoder = G_encoder(rep_size=args.rep_size, residual=False)
+    else:
+        g_encoder = G_encoder(
+            rep_size=args.rep_size,
+            residual=residual_critic_encoders,
+            num_blocks=args.num_blocks,
+            hidden_dim=args.hidden_dim,
+            scale_residual_by_depth=args.scale_critic_residual_by_depth,
+        )
     g_encoder_params = g_encoder.init(key_g, np.ones([1, goal_size]))
     critic_state = TrainState.create(
         apply_fn=None,
@@ -494,16 +515,19 @@ def main(args: Args):
     g_encoder.apply = jax.jit(g_encoder.apply)
 
     print(f'\nNumber of parameters in actor network are: {count_parameters(actor_state.params)} and the critic network are: {count_parameters(critic_state.params)}\n')
-    critic_encoder_type = "non-residual (crl_pd)" if args.use_non_residual_critic_encoders else "residual"
-    if args.use_non_residual_critic_encoders:
-        critic_encoder_desc = "sa/g encoders = 4-layer MLP, width = 1024"
+    if args.architecture == "default":
+        print('Network config: architecture = default (crl.py actor/critic MLPs: 4 layers, width = 1024)\n')
     else:
-        critic_encoder_desc = f"sa/g encoders = {args.num_blocks} residual blocks, width = {args.hidden_dim}"
-    print(f'Network config: hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks}, '
-          f'critic_encoder_type = {critic_encoder_type}, '
-          f'scale_actor_residual_by_depth = {args.scale_actor_residual_by_depth}, '
-          f'scale_critic_residual_by_depth = {args.scale_critic_residual_by_depth} '
-          f'(actor blocks={actor.num_blocks}, actor width={actor.hidden_dim}; {critic_encoder_desc})\n')
+        critic_encoder_type = "non-residual (crl.py MLP)" if args.use_non_residual_critic_encoders else "residual"
+        if args.use_non_residual_critic_encoders:
+            critic_encoder_desc = "sa/g encoders = 4-layer MLP, width = 1024"
+        else:
+            critic_encoder_desc = f"sa/g encoders = {args.num_blocks} residual blocks, width = {args.hidden_dim}"
+        print(f'Network config: architecture = block, hidden_dim (width) = {args.hidden_dim}, num_blocks = {args.num_blocks}, '
+              f'critic_encoder_type = {critic_encoder_type}, '
+              f'scale_actor_residual_by_depth = {args.scale_actor_residual_by_depth}, '
+              f'scale_critic_residual_by_depth = {args.scale_critic_residual_by_depth} '
+              f'(actor blocks={actor.num_blocks}, actor width={actor.hidden_dim}; {critic_encoder_desc})\n')
 
     # Trainstate
     training_state = CRLTrainingState(

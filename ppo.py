@@ -40,7 +40,7 @@ class Args:
     agent: str = "ppo"
     seed: int = 1
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    
+
     # logging and checkpointing
     track: bool = True
     wandb_project_name: str = "rl"
@@ -64,12 +64,12 @@ class Args:
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
-    num_timesteps: int = 50000000
+    num_timesteps: int = 200_000_000
     policy_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     value_hidden_sizes: list = field(default_factory=lambda: [256, 256, 256, 256])
     rollout_length: int = 160
     num_minibatches_per_rollout: int = 32
-    num_epochs_per_rollout: int = 8    
+    num_epochs_per_rollout: int = 8
     learning_rate: float = 1e-4
     discount: float = 0.99
     entropy_cost: float = 2e-2
@@ -107,7 +107,7 @@ class Actor(nn.Module):
     layer_norm: bool = False
     _min_std: float = 0.001
     _var_scale: float = 1
-    
+
     def setup(self):
         self.actor_net = MLP(self.layer_sizes, activation=self.activation, layer_norm=self.layer_norm)
 
@@ -119,7 +119,7 @@ class Actor(nn.Module):
         scale = (jax.nn.softplus(scale) + self._min_std) * self._var_scale
 
         return distrax.Normal(loc=loc, scale=scale)
-    
+
     def get_representation(self, x, normalizer_params=None):
         """Returns the activated penultimate layer output."""
         if normalizer_params is not None:
@@ -131,7 +131,7 @@ class Value(nn.Module):
     layer_sizes: Sequence[int]
     activation: Any = nn.swish
     layer_norm: bool = False
-    
+
     def setup(self):
         self.value_net = MLP(self.layer_sizes, activation=self.activation, layer_norm=self.layer_norm)
 
@@ -140,7 +140,7 @@ class Value(nn.Module):
             x = (x - normalizer_params.mean ) / (normalizer_params.std)
         value = self.value_net(x)
         return jnp.squeeze(value, axis=-1)
-    
+
     def get_representation(self, x, normalizer_params=None):
         """Returns the activated penultimate layer output."""
         if normalizer_params is not None:
@@ -152,19 +152,19 @@ def make_inference_fn(ppo_networks):
     """Creates params and inference function for the PPO agent."""
     def make_policy(params, deterministic: bool = False):
         policy_network = ppo_networks.policy_network
-        bijector = distrax.Tanh()  
+        bijector = distrax.Tanh()
 
         def policy(observations, goals, key_sample):
             inputs = jnp.concatenate([observations, goals], axis=-1)
             policy_dist = policy_network.apply(params['policy'], inputs, params['normalizer'])
-                
+
             if deterministic:
                 return bijector.forward( policy_dist.mode() ), {}
-                
+
             raw_actions = policy_dist.sample(seed=key_sample)
-                
+
             log_prob = policy_dist.log_prob(raw_actions) - bijector.forward_log_det_jacobian(raw_actions)
-            log_prob = jnp.sum(log_prob, axis=-1)  
+            log_prob = jnp.sum(log_prob, axis=-1)
             postprocessed_actions = bijector.forward(
                 raw_actions
             )
@@ -177,19 +177,19 @@ def make_inference_fn(ppo_networks):
     return make_policy
 
 def main(args: Args):
-    
+
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
     args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps
     args.num_training_steps_per_real_reset = args.num_training_step // max(1, args.num_reset_steps)
     args.minibatch_size = args.num_envs * args.rollout_length // ( args.num_minibatches_per_rollout )
-        
+
     print(f"Total number of training steps = {args.num_training_step}")
     print(f"Total number of gradient steps per training step = {args.num_minibatches_per_rollout * args.num_epochs_per_rollout}")
     print(f"Total number of env steps per training step = {args.num_envs * args.rollout_length}")
-    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / (args.num_minibatches_per_rollout * args.num_epochs_per_rollout)}")    
+    print(f"Data to update ratio = {  ( args.num_envs * args.rollout_length ) / (args.num_minibatches_per_rollout * args.num_epochs_per_rollout)}")
 
     args.exp_name = f"{args.wandb_name_tag + '__' if args.wandb_name_tag != '' else ''}{args.env_id}__{args.seed}__{os.path.basename(__file__)[: -len('.py')]}__{int(time.time())}"
-    
+
     # Initialize wandb if tracking is enabled
     if args.track:
         wandb.init(
@@ -206,7 +206,7 @@ def main(args: Args):
         if args.wandb_mode == 'offline':
             wandb_osh.set_log_level("ERROR")
             trigger_sync = TriggerWandbSyncHook()
-    
+
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, key_env, key_eval, key_policy, key_value = jax.random.split(key, 5)
@@ -214,7 +214,7 @@ def main(args: Args):
     # Initialize environment
     env_class, default_config = make_env(args)
     env = wrap_env( env_class(config=default_config), default_config.episode_length )
-    eval_env = wrap_env( env_class(config=default_config), default_config.episode_length )  
+    eval_env = wrap_env( env_class(config=default_config), default_config.episode_length )
     episode_length = default_config.episode_length
 
     # Initialize checkpoint folder
@@ -236,7 +236,7 @@ def main(args: Args):
     log_data_metric_keys = tuple(log_data_metric_keys)
 
     # Initialize PPO networks
-    ppo_network = PPONetworks( 
+    ppo_network = PPONetworks(
         policy_network = Actor(layer_sizes=args.policy_hidden_sizes + [action_size * 2]),
         value_network = Value(layer_sizes=args.value_hidden_sizes  + [1]),
     )
@@ -246,12 +246,12 @@ def main(args: Args):
             'policy': ppo_network.policy_network.init( key_policy, x=jnp.zeros((1, obs_size+goal_size)) ),
             'value': ppo_network.value_network.init( key_value, x=jnp.zeros((1, obs_size+goal_size)) ),
         },
-        tx=optax.adam(learning_rate=args.learning_rate),  
+        tx=optax.adam(learning_rate=args.learning_rate),
         normalizer_params=running_statistics.init_state((obs_size+goal_size,) ),
         env_steps=np.zeros((), dtype=np.float64),
     )
     make_policy = make_inference_fn(ppo_network)
-    
+
     print(f'\nNumber of parameters in actor critic network are: {count_parameters(training_state.params)}\n')
 
     # Initialize evaluators
@@ -271,13 +271,13 @@ def main(args: Args):
         unroll_length,
         extra_fields,
     ):
-        """Collect trajectories of given unroll_length."""        
+        """Collect trajectories of given unroll_length."""
         @jax.jit
         def f(carry, unused_t):
             env_state, key = carry
             key, next_key = jax.random.split(key)
-            actions, policy_extras = policy(env_state.obs, env_state.info['target_goal'], key)  
-            
+            actions, policy_extras = policy(env_state.obs, env_state.info['target_goal'], key)
+
             next_env_state = env.step(env_state, actions)
             state_extras = {x: next_env_state.info[x] for x in extra_fields}
 
@@ -291,7 +291,7 @@ def main(args: Args):
                 next_observation=jnp.concatenate( [next_env_state.obs, next_env_state.info['target_goal']], axis=-1),
                 extras={'policy_extras': policy_extras, 'state_extras': state_extras},
             )
-            
+
             return (next_env_state, next_key), (transition, metrics)
 
         (final_env_state, _), (data, data_metrics) = jax.lax.scan(
@@ -302,10 +302,10 @@ def main(args: Args):
     @jax.jit
     def data_collect_step(training_state, env_state, key_generate_rollout):
         policy = make_policy({
-            'policy': training_state.params['policy'], 
+            'policy': training_state.params['policy'],
             'normalizer': training_state.normalizer_params,
             })
-        
+
         env_state, data, data_metrics = generate_unroll(
             env,
             env_state,
@@ -384,11 +384,11 @@ def main(args: Args):
         value_apply = ppo_network.value_network.apply
 
         data, value_targets, advantages = data
-        
+
         # Policy function loss
         policy_dist = policy_apply(params['policy'], data.observation, normalizer_params)
         target_action_log_probs = policy_dist.log_prob( data.extras['policy_extras']['raw_action'] ) - bijector.forward_log_det_jacobian( data.extras['policy_extras']['raw_action'] )
-        target_action_log_probs = jnp.sum(target_action_log_probs, axis=-1)  
+        target_action_log_probs = jnp.sum(target_action_log_probs, axis=-1)
         behaviour_action_log_probs = data.extras['policy_extras']['log_prob']
         rho_s = jnp.exp(target_action_log_probs - behaviour_action_log_probs)
         surrogate_loss1 = rho_s * advantages
@@ -402,7 +402,7 @@ def main(args: Args):
 
         # Entropy loss
         entropy = policy_dist.entropy() + bijector.forward_log_det_jacobian( policy_dist.sample(seed=rng) )
-        entropy = jnp.mean( jnp.sum(entropy, axis=-1) )        
+        entropy = jnp.mean( jnp.sum(entropy, axis=-1) )
 
         entropy_loss = args.entropy_cost * -entropy
 
@@ -418,19 +418,19 @@ def main(args: Args):
     def learn_step(training_state, data, key_sgd):
 
         def _learn_step(carry, unused_t):
-            
+
             def _train_minibatch_step(carry, data):
                 training_state, key = carry
                 key, key_loss = jax.random.split(key)
-                
+
                 (_, metrics), grads = jax.value_and_grad(compute_ppo_loss, has_aux=True)(training_state.params, training_state.normalizer_params, data, key_loss)
                 training_state = training_state.apply_gradients(grads=grads)
-                
+
                 return (training_state, key), metrics
 
             training_state, data, value_targets, advantages, key = carry
             key, key_perm, key_grad = jax.random.split(key, 3)
-        
+
             def shuffle_and_reshape(x: jnp.ndarray):
                 x = jax.random.permutation(key_perm, x)
                 x = jnp.reshape(x, (args.num_minibatches_per_rollout, -1) + x.shape[2:])
@@ -467,7 +467,7 @@ def main(args: Args):
         )
         if args.normalize_advantage:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
+
         (training_state, _, _, _, _), metrics = jax.lax.scan(
             _learn_step,
             (training_state, data, value_targets, advantages, key_sgd),
@@ -532,7 +532,7 @@ def main(args: Args):
 
         # (4) Feature rank. Most basic. Lyle et al. (2022)
         # Get N_obs directly from the shape
-        n_obs = jnp.array(feature_matrices.shape[1], dtype=svals.dtype) 
+        n_obs = jnp.array(feature_matrices.shape[1], dtype=svals.dtype)
         svals_of_normalized = svals / jnp.sqrt(n_obs)
         over_cutoff = svals_of_normalized > cutoff
         feature_ranks = over_cutoff.sum(axis=-1)
@@ -546,7 +546,7 @@ def main(args: Args):
 
     @jax.jit
     def extra_log_step(training_state, data, key_extra_log):
-        
+
         bijector = distrax.Tanh()
         policy_apply = ppo_network.policy_network.apply
         value_apply = ppo_network.value_network.apply
@@ -556,12 +556,12 @@ def main(args: Args):
             value_feature = value_apply(training_state.params['value'], data.observation, training_state.normalizer_params, method=ppo_network.value_network.get_representation)
             policy_feature_ranks = compute_feature_diagnostics(policy_feature)
             value_feature_ranks = compute_feature_diagnostics(value_feature)
-            
+
             policy_feature_ranks = {f"policy_{k}": v for k, v in policy_feature_ranks.items()}
             value_feature_ranks = {f"value_{k}": v for k, v in value_feature_ranks.items()}
 
             return carry, policy_feature_ranks | value_feature_ranks
-        
+
         (_), metrics = jax.lax.scan(
                 _extra_log_step,
                 (key_extra_log),
@@ -576,13 +576,13 @@ def main(args: Args):
     xt = time.time()
     metrics = None
     for ts in range(1, args.num_training_step + 1):
-        
+
         key_sgd, key_generate_unroll, key = jax.random.split(key, 3)
 
         data_collect_start = time.time()
         training_state, env_state, training_data, data_metrics = data_collect_step(training_state, env_state, key_generate_unroll)
         data_collect_step_time += time.time() - data_collect_start
-        
+
         learn_step_start = time.time()
         training_state, training_metrics = learn_step(training_state, training_data, key_sgd)
         learn_step_time += time.time() - learn_step_start
@@ -601,14 +601,14 @@ def main(args: Args):
 
         if ts % args.num_training_steps_per_eval == 0:
             es = ts // args.num_training_steps_per_eval
-            
+
             metrics = jax.tree_util.tree_map(
                 lambda x: x / args.num_training_steps_per_eval, metrics
             )
             metrics = jax.tree_util.tree_map(jnp.mean, metrics)
             jax.tree_util.tree_map(lambda x: x.block_until_ready(), metrics)
-            
-            training_step_time = time.time() - xt            
+
+            training_step_time = time.time() - xt
             training_walltime += training_step_time
 
             sps = (
@@ -707,7 +707,7 @@ def main(args: Args):
 
     if args.track:
         wandb.finish()
-            
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     main(args)
