@@ -1,4 +1,33 @@
-# to-do
+# Experiment Commands
+All runs are trained for 200,000,000 timesteps.
+
+Baseline CRL (Short horizon/PD controller)
+```
+python stable_crl.py --env_id creative-4-task1 --use_pd --pd_duration 5 --architecture default --num_blocks 8
+```
+StableCRL (Short horizon/PD controller)
+```
+python stable_crl.py --env_id creative-4-task1 --use_pd --pd_duration 5 --architecture default --repetition_factor 12 --entropy_cost 0.01 
+```
+StableCRL Scaled (Short horizon/PD controller)
+```
+python stable_crl.py --env_id creative-4-task1 --use_pd --pd_duration 5 --architecture block --num_blocks 8 --repetition_factor 12 --entropy_cost 0.01 
+```
+
+StableCRL Scaled (Long horizon/Raw controller)
+```
+python stable_crl.py --env_id creative-4-task1 --no-use_pd --architecture block --num_blocks 8 --repetition_factor 12 --entropy_cost 0.01 
+```
+
+PPO (Short horizon/PD controller)
+```
+python ppo_pd.py --env_id creative-4-task1 --use_pd --pd_duration 5
+```
+
+PPO (Long horizon/Raw controller)
+```
+python ppo_pd.py --env_id creative-4-task1 --no-use_pd
+```
 
 ## Demos
 
