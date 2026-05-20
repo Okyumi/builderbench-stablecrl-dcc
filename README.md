@@ -3,7 +3,7 @@ All runs are trained for 200,000,000 timesteps.
 
 Baseline CRL (Short horizon/PD controller)
 ```
-python stable_crl.py --env_id creative-4-task1 --use_pd --pd_duration 5 --architecture default --num_blocks 8
+python stable_crl.py --env_id creative-4-task1 --use_pd --pd_duration 5 --architecture default
 ```
 StableCRL (Short horizon/PD controller)
 ```
