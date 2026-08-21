@@ -29,6 +29,60 @@ PPO (Long horizon/Raw controller)
 python ppo_pd.py --env_id creative-4-task1 --no-use_pd
 ```
 
+## DCC continual RL
+
+This fork adds a Decomposed Contrastive Critic on top of StableCRL while
+retaining the paper implementation's PD horizon reduction, trajectory
+repetition, entropy regularization, and log-sum-exp regularization.
+
+Single-task DCC smoke run:
+
+```bash
+python stable_crl_dcc.py \
+  --env-id creative-2-task1 \
+  --num-timesteps 1000000 \
+  --num-envs 256 \
+  --repetition-factor 12 \
+  --entropy-cost 0.01 \
+  --no-track \
+  --no-record-videos \
+  --no-visualize-samples \
+  --mjx-impl jax
+```
+
+Use `--mjx-impl warp` (the default) for the paper's GPU path; `jax` is useful
+for CPU initialization and correctness smoke tests.
+
+Continual run (the default curriculum is pick/place followed by increasingly
+long stacks):
+
+```bash
+python continual_dcc.py \
+  --task-sequence creative-1-task1,creative-1-task2,creative-2-task1,creative-3-task1,creative-4-task1 \
+  --base-steps 200000000 \
+  --steps-per-task 200000000 \
+  --repetition-factor 12 \
+  --entropy-cost 0.01
+```
+
+The continual driver writes an immutable task manifest, atomic task-boundary
+checkpoints, and a lower-triangular evaluation matrix in
+`checkpoints/continual_dcc/continual_eval.jsonl`.
+
+### Why this is more than padding
+
+Variable-cube inputs are represented as masked sets. Shared per-cube encoders
+and symmetric pooling make critic and goal representations invariant to cube
+permutation. The actor uses an equivariant pointer head: it scores each valid
+cube, maps the selected slot to BuilderBench's continuous selector action, and
+conditions motion on that cube. Padded slots are masked out of pooling,
+selection, and the DCC dynamics loss.
+
+Task identities use a versioned hash of canonical goal geometry. The hash is
+invariant to cube permutation and horizontal translation while preserving
+height above the ground plane, so `pick` and `place` remain distinct skills.
+See `doc/stablecrl_upstream_audit.md` for the design and provenance audit.
+
 ## Demos
 
 ### Long Horizon (3 Stack)

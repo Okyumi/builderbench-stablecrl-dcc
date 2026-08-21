@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "mujoco == 3.7.0",
     "mujoco-mjx == 3.7.0",
+    "mujoco-warp == 3.7.0",
     "jax[cuda12] == 0.10.0",
     "optax == 0.2.8",
     "etils == 1.14.0",
@@ -51,4 +52,4 @@ homepage = "https://rajghugare19.github.io/builderbench"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["builderbench*"]
+include = ["builderbench*", "continual*"]
