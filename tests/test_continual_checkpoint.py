@@ -10,9 +10,14 @@ from continual_dcc import (
     _load_boundary_checkpoint,
     _save_boundary_checkpoint,
 )
+from stable_crl_dcc import main as train_task
 
 
 class ContinualCheckpointTest(unittest.TestCase):
+    def test_repetition_factor_rejects_empty_crtr_batch(self):
+        with self.assertRaisesRegex(ValueError, "empty training batch"):
+            train_task(Args(num_envs=2, repetition_factor=12))
+
     def test_recipe_round_trip_and_mismatch_rejection(self):
         recipe = _checkpoint_recipe(Args())
         carry = {"value": np.array([1.0, 2.0], dtype=np.float32)}

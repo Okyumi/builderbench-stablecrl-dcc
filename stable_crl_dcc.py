@@ -152,7 +152,7 @@ class Args:
     # logging and checkpointing
     track: bool = True
     wandb_project_name: str = "rl"
-    wandb_entity: str = 'david-yan'
+    wandb_entity: str | None = None
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -179,7 +179,7 @@ class Args:
     num_envs: int = 1024
     num_eval_envs: int = 128
     env_early_termination: bool = False # note!
-    env_episode_length: int = None
+    env_episode_length: int | None = None
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
@@ -417,6 +417,15 @@ def make_inference_fn(dcc_networks):
     return make_policy
 
 def main(args: Args, carry: dict | None = None, task_index: int = 0):
+
+    if args.repetition_factor < 1:
+        raise ValueError("repetition_factor must be positive")
+    if args.num_envs < args.repetition_factor:
+        raise ValueError(
+            f"num_envs={args.num_envs} must be at least "
+            f"repetition_factor={args.repetition_factor}; otherwise CRTR "
+            "would create an empty training batch"
+        )
 
     args.num_training_step = args.num_timesteps // ( args.num_envs * args.rollout_length )
     args.num_training_steps_per_eval = args.num_training_step // args.num_eval_steps

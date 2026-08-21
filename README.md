@@ -108,6 +108,25 @@ shapes rather than assigning permanent semantics to padded indices.
   SGCRL parity, semantic layout, validation, and capacity recommendation.
 - `docs/2026-08-21_documentation_convention.md` defines the required dated
   implementation-note convention.
+- `docs/2026-08-21_torch_hpc_experiments.md` documents the Torch Slurm array,
+  SGCRL-matched cells, environment setup, and checkpoint layout.
+
+## NYU Torch HPC
+
+The active batch contains 12 runs: seeds 5/6/7 for persistent-actor DCC with
+and without masked dynamics, plus repetition-12 probes on the three- and
+four-cube long-horizon tasks.
+
+```bash
+python experiment_configs.py --list
+DRY_RUN=true CONFIG_INDEX=0 bash DRAFT.sh
+my_slurm_accounts
+sbatch --account=torch_pr_XXX_XXXXX DRAFT.sh
+```
+
+Torch requires the allocation account and does not require a manually chosen
+partition. `DRAFT.sh` defaults to one run per GPU and writes a separate
+checkpoint directory for every configuration and seed.
 
 ## Demos
 
