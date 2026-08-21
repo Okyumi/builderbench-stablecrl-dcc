@@ -4,13 +4,16 @@ The decomposition follows DCC's shared/task split::
 
     z_shared = h_phi(b_shared(s, a))
     z_task   = phi_task(s, a)
-    z_sa     = z_shared + z_task
-    z_goal   = psi_shared(g)
+    z_sa     = combine(z_shared, z_task)
+    z_goal   = project(psi_shared(g))
 
-``b_shared``, ``h_phi``, ``h_dyn`` and ``psi_shared`` transfer between
-tasks. ``phi_task`` is reinitialized at every task boundary. The dynamics
-head predicts next cube positions per slot with shared weights; its loss is
-masked, so padded slots never become artificial training targets.
+``combine`` is either addition or concatenation, matching the SGCRL DCC
+ablations.  The goal projection is enabled explicitly or automatically when
+concatenation doubles the state-action representation size. ``b_shared``,
+``h_phi``, ``h_dyn``, ``psi_shared`` and an optional ``psi_proj`` transfer
+between tasks. ``phi_task`` is reinitialized at every task boundary. The
+dynamics head predicts next cube positions per slot with shared weights; its
+loss is masked, so padded slots never become artificial training targets.
 """
 from __future__ import annotations
 
@@ -119,6 +122,16 @@ class SharedProjection(nn.Module):
         return nn.Dense(
             self.rep_size, kernel_init=_lecun_uniform(), name="out"
         )(hidden)
+
+
+class GoalProjection(nn.Module):
+    rep_size: int
+
+    @nn.compact
+    def __call__(self, goal_repr):
+        return nn.Dense(
+            self.rep_size, kernel_init=_lecun_uniform(), name="out"
+        )(goal_repr)
 
 
 class EquivariantDynamicsHead(nn.Module):
@@ -242,7 +255,11 @@ class DCCNetworks:
     h_dyn: nn.Module
     phi_task: nn.Module
     psi_shared: nn.Module
+    psi_proj: nn.Module | None
     actor: nn.Module
+    combine_mode: str
+    goal_encoder_mode: str
+    shared_groups: tuple[str, ...]
     init_params: Callable
     init_task_params: Callable
     apply_sa: Callable
@@ -257,9 +274,31 @@ def make_dcc_networks(
     rep_size: int = 64,
     shared_width: int = 512,
     task_width: int = 256,
+    shared_depth: int = 3,
+    task_depth: int = 4,
+    combine_mode: str = "add",
+    goal_encoder_mode: str = "shared",
 ) -> DCCNetworks:
+    if combine_mode not in {"add", "concat"}:
+        raise ValueError(
+            f"combine_mode must be 'add' or 'concat', got {combine_mode!r}"
+        )
+    if goal_encoder_mode not in {"shared", "projected"}:
+        raise ValueError(
+            "goal_encoder_mode must be 'shared' or 'projected', got "
+            f"{goal_encoder_mode!r}"
+        )
+    if shared_depth < 1 or task_depth < 1:
+        raise ValueError("DCC encoder depths must be positive")
+
+    critic_rep_size = rep_size if combine_mode == "add" else 2 * rep_size
+    use_goal_projection = (
+        goal_encoder_mode == "projected" or combine_mode == "concat"
+    )
     b_shared = SharedStateActionBackbone(
-        max_cubes=layout.max_cubes, width=shared_width
+        max_cubes=layout.max_cubes,
+        width=shared_width,
+        depth=shared_depth,
     )
     h_phi = SharedProjection(rep_size=rep_size)
     h_dyn = EquivariantDynamicsHead()
@@ -267,11 +306,18 @@ def make_dcc_networks(
         max_cubes=layout.max_cubes,
         rep_size=rep_size,
         width=task_width,
+        depth=task_depth,
     )
     psi_shared = SetGoalEncoder(
         max_cubes=layout.max_cubes,
         rep_size=rep_size,
         width=shared_width,
+        depth=shared_depth,
+    )
+    psi_proj = (
+        GoalProjection(rep_size=critic_rep_size)
+        if use_goal_projection
+        else None
     )
     actor = SetActor(
         max_cubes=layout.max_cubes,
@@ -287,17 +333,22 @@ def make_dcc_networks(
     dummy_goal[:, layout.max_cubes * POSITION_DIM] = 1.0
 
     def _init_parts(key):
-        keys = jax.random.split(key, 6)
+        keys = jax.random.split(key, 7)
         b_params = b_shared.init(keys[0], dummy_obs, dummy_action)
         hidden, slots, _ = b_shared.apply(b_params, dummy_obs, dummy_action)
-        return {
+        parts = {
             "b_shared": b_params,
             "h_phi": h_phi.init(keys[1], hidden),
             "h_dyn": h_dyn.init(keys[2], slots),
             "phi_task": phi_task.init(keys[3], dummy_obs, dummy_action),
             "psi_shared": psi_shared.init(keys[4], dummy_goal),
-            "actor": actor.init(keys[5], dummy_obs, np.zeros((1, rep_size), np.float32)),
         }
+        goal_repr = psi_shared.apply(parts["psi_shared"], dummy_goal)
+        if psi_proj is not None:
+            parts["psi_proj"] = psi_proj.init(keys[5], goal_repr)
+            goal_repr = psi_proj.apply(parts["psi_proj"], goal_repr)
+        parts["actor"] = actor.init(keys[6], dummy_obs, goal_repr)
+        return parts
 
     def init_params(key):
         return _init_parts(key)
@@ -311,10 +362,15 @@ def make_dcc_networks(
         )
         shared = h_phi.apply(params["h_phi"], hidden)
         task = phi_task.apply(params["phi_task"], observation, action)
-        return shared + task
+        if combine_mode == "add":
+            return shared + task
+        return jnp.concatenate([shared, task], axis=-1)
 
     def apply_goal(params, goal):
-        return psi_shared.apply(params["psi_shared"], goal)
+        goal_repr = psi_shared.apply(params["psi_shared"], goal)
+        if psi_proj is not None:
+            goal_repr = psi_proj.apply(params["psi_proj"], goal_repr)
+        return goal_repr
 
     def apply_dynamics(params, observation, action):
         _, slots, mask = b_shared.apply(
@@ -329,7 +385,17 @@ def make_dcc_networks(
         h_dyn=h_dyn,
         phi_task=phi_task,
         psi_shared=psi_shared,
+        psi_proj=psi_proj,
         actor=actor,
+        combine_mode=combine_mode,
+        goal_encoder_mode=goal_encoder_mode,
+        shared_groups=(
+            "b_shared",
+            "h_phi",
+            "h_dyn",
+            "psi_shared",
+            *(("psi_proj",) if psi_proj is not None else ()),
+        ),
         init_params=init_params,
         init_task_params=init_task_params,
         apply_sa=apply_sa,

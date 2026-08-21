@@ -112,6 +112,42 @@ class DCCNetworkTest(unittest.TestCase):
             ),
         )
 
+    def test_sgcrl_combine_and_goal_projection_modes(self):
+        observation, goal, action = self._inputs(False)
+        cases = (
+            ("add", "shared", 8, False),
+            ("add", "projected", 8, True),
+            ("concat", "shared", 16, True),
+        )
+        for combine_mode, goal_mode, expected_size, has_projection in cases:
+            with self.subTest(combine=combine_mode, goal=goal_mode):
+                networks = make_dcc_networks(
+                    layout=self.layout,
+                    action_size=5,
+                    rep_size=8,
+                    shared_width=16,
+                    task_width=8,
+                    shared_depth=1,
+                    task_depth=2,
+                    combine_mode=combine_mode,
+                    goal_encoder_mode=goal_mode,
+                )
+                params = networks.init_params(jax.random.PRNGKey(4))
+                actor_params = params.pop("actor")
+                sa_repr = networks.apply_sa(params, observation, action)
+                goal_repr = networks.apply_goal(params, goal)
+                self.assertEqual(sa_repr.shape[-1], expected_size)
+                self.assertEqual(goal_repr.shape[-1], expected_size)
+                self.assertEqual("psi_proj" in params, has_projection)
+                self.assertEqual(
+                    "psi_proj" in networks.shared_groups, has_projection
+                )
+                mean, log_std = networks.actor.apply(
+                    actor_params, observation, goal_repr
+                )
+                self.assertEqual(mean.shape, (1, 5))
+                self.assertEqual(log_std.shape, (1, 5))
+
 
 if __name__ == "__main__":
     unittest.main()

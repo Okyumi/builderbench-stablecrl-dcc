@@ -74,14 +74,61 @@ def _checkpoint_path(directory: Path, task_index: int) -> Path:
     return directory / f"task_{task_index:02d}.pkl"
 
 
+def _checkpoint_recipe(args: Args) -> dict:
+    """Training semantics that must remain fixed across a resumed run."""
+    names = (
+        "seed",
+        "task_sequence",
+        "task_data_version",
+        "base_steps",
+        "steps_per_task",
+        "num_envs",
+        "rollout_length",
+        "actor_learning_rate",
+        "critic_learning_rate",
+        "discount",
+        "entropy_cost",
+        "entropy_cost_final",
+        "entropy_decay_fraction",
+        "logsumexp_cost",
+        "rep_size",
+        "max_replay_size",
+        "min_replay_size",
+        "repetition_factor",
+        "use_pd",
+        "pd_duration",
+        "max_cubes",
+        "dcc_dyn_weight",
+        "dcc_dyn_weight_after_task0",
+        "dcc_shared_width",
+        "dcc_shared_depth",
+        "dcc_task_width",
+        "dcc_task_depth",
+        "dcc_combine_mode",
+        "dcc_goal_encoder_mode",
+        "dcc_carry_shared",
+        "carry_actor",
+    )
+    return {
+        "algorithm": "stablecrl-dcc-semantic-set-v2",
+        **{name: getattr(args, name) for name in names},
+    }
+
+
 def _save_boundary_checkpoint(
-    path: Path, *, carry: dict, global_id: str, task_index: int
+    path: Path,
+    *,
+    carry: dict,
+    global_id: str,
+    task_index: int,
+    recipe: dict,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "task_index": task_index,
         "global_id": global_id,
+        "recipe": recipe,
         "carry": jax.tree_util.tree_map(np.asarray, carry),
     }
     encoded = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
@@ -94,11 +141,11 @@ def _save_boundary_checkpoint(
 
 
 def _load_boundary_checkpoint(
-    path: Path, *, global_id: str, task_index: int
+    path: Path, *, global_id: str, task_index: int, recipe: dict
 ) -> dict:
     with path.open("rb") as stream:
         payload = pickle.load(stream)
-    if payload.get("schema_version") != 1:
+    if payload.get("schema_version") != 2:
         raise ValueError(f"unsupported checkpoint schema in {path}")
     if payload.get("task_index") != task_index:
         raise ValueError(f"task index mismatch in {path}")
@@ -107,10 +154,17 @@ def _load_boundary_checkpoint(
             f"semantic task mismatch in {path}: expected {global_id}, "
             f"got {payload.get('global_id')}"
         )
+    if payload.get("recipe") != recipe:
+        raise ValueError(
+            f"training recipe mismatch in {path}; use a fresh checkpoint "
+            "directory when changing a DCC/StableCRL ablation"
+        )
     return payload["carry"]
 
 
-def _resume_prefix(directory: Path, records) -> tuple[int, dict | None]:
+def _resume_prefix(
+    directory: Path, records, recipe: dict
+) -> tuple[int, dict | None]:
     carry = None
     next_task = 0
     for index, record in enumerate(records):
@@ -119,9 +173,12 @@ def _resume_prefix(directory: Path, records) -> tuple[int, dict | None]:
             break
         try:
             carry = _load_boundary_checkpoint(
-                path, global_id=record.global_id, task_index=index
+                path,
+                global_id=record.global_id,
+                task_index=index,
+                recipe=recipe,
             )
-        except (EOFError, OSError, pickle.UnpicklingError, ValueError):
+        except (EOFError, OSError, pickle.UnpicklingError):
             break
         next_task = index + 1
     return next_task, carry
@@ -155,6 +212,10 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
             rep_size=args.rep_size,
             shared_width=args.dcc_shared_width,
             task_width=args.dcc_task_width,
+            shared_depth=args.dcc_shared_depth,
+            task_depth=args.dcc_task_depth,
+            combine_mode=args.dcc_combine_mode,
+            goal_encoder_mode=args.dcc_goal_encoder_mode,
         )
         critic = dict(carry["critic_shared"])
         critic["phi_task"] = carry["task_bank"][eval_index]["phi_task"]
@@ -193,11 +254,27 @@ def main(args: Args) -> None:
         tasks, task_data_version=args.task_data_version
     )
     checkpoint_dir = Path(args.boundary_checkpoint_dir)
+    recipe = _checkpoint_recipe(args)
+    recipe_path = checkpoint_dir / "run_recipe.json"
+    if recipe_path.is_file():
+        existing_recipe = json.loads(recipe_path.read_text())
+        if existing_recipe != recipe:
+            raise ValueError(
+                f"training recipe mismatch in {recipe_path}; use a fresh "
+                "checkpoint directory when changing an ablation"
+            )
+    else:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        recipe_path.write_text(
+            json.dumps(recipe, indent=2, sort_keys=True) + "\n"
+        )
     write_manifest(records, checkpoint_dir / "task_manifest.json")
 
     start_task, carry = (0, None)
     if args.resume:
-        start_task, carry = _resume_prefix(checkpoint_dir, records)
+        start_task, carry = _resume_prefix(
+            checkpoint_dir, records, recipe
+        )
     if start_task:
         print(f"Resuming continual run at task {start_task}/{len(records)}")
 
@@ -230,6 +307,7 @@ def main(args: Args) -> None:
             carry=carry,
             global_id=record.global_id,
             task_index=task_index,
+            recipe=recipe,
         )
 
 

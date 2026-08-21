@@ -65,6 +65,20 @@ python continual_dcc.py \
   --entropy-cost 0.01
 ```
 
+Core SGCRL/DCC ablations are available directly, for example:
+
+```bash
+python continual_dcc.py \
+  --dcc-combine-mode concat \
+  --dcc-goal-encoder-mode shared \
+  --dcc-dyn-weight 1.0 \
+  --dcc-dyn-weight-after-task0 0.0 \
+  --dcc-task-depth 4
+```
+
+Changing an algorithmic setting requires a fresh boundary-checkpoint
+directory. Resume checkpoints store and validate the full training recipe.
+
 The continual driver writes an immutable task manifest, atomic task-boundary
 checkpoints, and a lower-triangular evaluation matrix in
 `checkpoints/continual_dcc/continual_eval.jsonl`.
@@ -81,7 +95,19 @@ selection, and the DCC dynamics loss.
 Task identities use a versioned hash of canonical goal geometry. The hash is
 invariant to cube permutation and horizontal translation while preserving
 height above the ground plane, so `pick` and `place` remain distinct skills.
-See `doc/stablecrl_upstream_audit.md` for the design and provenance audit.
+The default capacity is eight cubes (`--max-cubes 8`). Set it to the largest
+known task before training. For open-ended curricula, use 4/8/16 capacity
+buckets and reuse the shared set-encoder parameters across separately compiled
+shapes rather than assigning permanent semantics to padded indices.
+
+## Implementation notes
+
+- `docs/2026-08-21_stablecrl_upstream_audit.md` records provenance and the
+  repository decision.
+- `docs/2026-08-21_dcc_continual_implementation.md` records the DCC lifecycle,
+  SGCRL parity, semantic layout, validation, and capacity recommendation.
+- `docs/2026-08-21_documentation_convention.md` defines the required dated
+  implementation-note convention.
 
 ## Demos
 

@@ -212,8 +212,14 @@ class Args:
     # continual DCC
     max_cubes: int = 8
     dcc_dyn_weight: float = 1.0
+    dcc_dyn_weight_after_task0: float | None = None
     dcc_shared_width: int = 512
+    dcc_shared_depth: int = 3
     dcc_task_width: int = 256
+    dcc_task_depth: int = 4
+    dcc_combine_mode: Literal["add", "concat"] = "add"
+    dcc_goal_encoder_mode: Literal["shared", "projected"] = "shared"
+    dcc_carry_shared: bool = True
 
 @flax.struct.dataclass
 class CRLTrainingState:
@@ -503,6 +509,10 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         rep_size=args.rep_size,
         shared_width=args.dcc_shared_width,
         task_width=args.dcc_task_width,
+        shared_depth=args.dcc_shared_depth,
+        task_depth=args.dcc_task_depth,
+        combine_mode=args.dcc_combine_mode,
+        goal_encoder_mode=args.dcc_goal_encoder_mode,
     )
     initialized = dcc.init_params(key_sa)
     actor_state = TrainState.create(
@@ -519,20 +529,30 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         if carry.get("actor") is not None:
             actor_state = actor_state.replace(params=carry["actor"])
         critic_params = dict(critic_state.params)
-        for group in ("b_shared", "h_phi", "h_dyn", "psi_shared"):
-            critic_params[group] = carry["critic_shared"][group]
+        if args.dcc_carry_shared:
+            for group in dcc.shared_groups:
+                critic_params[group] = carry["critic_shared"][group]
         # phi_task and the critic optimizer are intentionally fresh for the
         # new task. Shared knowledge lives in the carried parameter groups.
         critic_state = critic_state.replace(params=critic_params)
         print(
-            f"Continual transfer: restored shared DCC groups for "
-            f"task_index={task_index}; reset phi_task and optimizer state."
+            f"Continual transfer: "
+            f"{'restored' if args.dcc_carry_shared else 'reset'} shared DCC "
+            f"groups for task_index={task_index}; reset phi_task and "
+            "optimizer state."
         )
+    dyn_weight = (
+        args.dcc_dyn_weight
+        if task_index == 0 or args.dcc_dyn_weight_after_task0 is None
+        else args.dcc_dyn_weight_after_task0
+    )
     print(
         f"\nDCC parameters: actor={count_parameters(actor_state.params)}, "
         f"critic={count_parameters(critic_state.params)}; "
         f"max_cubes={args.max_cubes}, shared_width={args.dcc_shared_width}, "
-        f"task_width={args.dcc_task_width}, dyn_weight={args.dcc_dyn_weight}\n"
+        f"task_width={args.dcc_task_width}, combine={args.dcc_combine_mode}, "
+        f"goal_encoder={args.dcc_goal_encoder_mode}, "
+        f"dyn_weight={dyn_weight}\n"
     )
 
     # Trainstate
@@ -756,7 +776,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             )
             critic_loss = (
                 info_nce_loss + logsumexp_loss
-                + args.dcc_dyn_weight * dynamics_loss
+                + dyn_weight * dynamics_loss
             )
 
             I = jnp.eye(logits.shape[0])
@@ -1059,7 +1079,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         "actor": training_state.actor_state.params,
         "critic_shared": {
             group: training_state.critic_state.params[group]
-            for group in ("b_shared", "h_phi", "h_dyn", "psi_shared")
+            for group in dcc.shared_groups
         },
         "task_index": task_index,
         "env_id": args.env_id,
