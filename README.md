@@ -126,8 +126,10 @@ cells. Every group uses matched seeds 5/6/7.
 python experiment_configs.py --list
 DRY_RUN=true CONFIG_INDEX=0 bash DRAFT.sh
 my_slurm_accounts
-sbatch --account=torch_pr_XXX_XXXXX --array=0-23 DRAFT.sh
-# After validating the individual-task controls:
+sbatch --account=torch_pr_XXX_XXXXX --array=0-17 DRAFT.sh
+# After validating the matched individual-task controls:
+sbatch --account=torch_pr_XXX_XXXXX --array=18-23 DRAFT.sh
+# Then run the continual DCC stage:
 sbatch --account=torch_pr_XXX_XXXXX --array=24-35 DRAFT.sh
 ```
 

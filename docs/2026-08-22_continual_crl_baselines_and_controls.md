@@ -163,15 +163,22 @@ continual-test results.
 30--35  existing one-task DCC CRTR probes
 ```
 
-Run the requested controls and vanilla baselines first:
+Run the individual-task controls first:
 
 ```bash
 python experiment_configs.py --list
 DRY_RUN=true CONFIG_INDEX=0 bash DRAFT.sh
-sbatch --account=torch_pr_XXX_XXXXX --array=0-23 DRAFT.sh
+sbatch --account=torch_pr_XXX_XXXXX --array=0-17 DRAFT.sh
 ```
 
-After inspecting the matched individual-task results, launch the DCC stage:
+After inspecting the matched upstream/wrapper/DCC individual-task results,
+launch the requested continual vanilla baselines:
+
+```bash
+sbatch --account=torch_pr_XXX_XXXXX --array=18-23 DRAFT.sh
+```
+
+Only after those controls are understood, launch the continual DCC stage:
 
 ```bash
 sbatch --account=torch_pr_XXX_XXXXX --array=24-35 DRAFT.sh
