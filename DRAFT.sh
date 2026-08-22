@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=bb_stablecrl_dcc
+#SBATCH --job-name=bb_stablecrl
 #SBATCH --time=47:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --array=0-11
+#SBATCH --array=0-35
 #SBATCH --output=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.out
 #SBATCH --error=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.err
 #SBATCH --mail-user=yd2247@nyu.edu
@@ -33,10 +33,11 @@ LOG_ROOT="${LOG_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/logs/runs}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/checkpoints}"
 WANDB_DIR="${WANDB_DIR:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/wandb}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-${SCRATCH_ROOT}/.cache/builderbench-stablecrl-dcc}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${XDG_CACHE_HOME}/jax}"
 TMPDIR="${TMPDIR:-${SCRATCH_ROOT}/tmp/builderbench-stablecrl-dcc}"
 
-# Shared paper-scale defaults. Per-cell DCC choices come only from
-# experiment_configs.py so an array index always has one reproducible meaning.
+# Shared paper-scale defaults. Per-cell algorithm and lifecycle choices come
+# only from experiment_configs.py so every array index is reproducible.
 BASE_STEPS="${BASE_STEPS:-200000000}"
 STEPS_PER_TASK="${STEPS_PER_TASK:-200000000}"
 NUM_ENVS="${NUM_ENVS:-1024}"
@@ -85,7 +86,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export XDG_CACHE_HOME TMPDIR REQUIRE_GPU
+export XDG_CACHE_HOME JAX_COMPILATION_CACHE_DIR TMPDIR REQUIRE_GPU
 
 bool_flag() {
   local flag_name="$1"
@@ -140,7 +141,7 @@ if ! [[ "$TASKS_PER_GPU" =~ ^[1-4]$ ]]; then
 fi
 
 mkdir -p "$LOG_ROOT" "$CHECKPOINT_ROOT" "$WANDB_DIR" \
-  "$XDG_CACHE_HOME" "$TMPDIR"
+  "$XDG_CACHE_HOME" "$JAX_COMPILATION_CACHE_DIR" "$TMPDIR"
 setup_environment
 
 cd "$REPO_DIR"
@@ -163,7 +164,7 @@ if [ -n "${SLURM_ARRAY_TASK_MAX:-}" ] \
 fi
 
 echo "============================================================"
-echo "StableCRL-DCC on NYU Torch"
+echo "BuilderBench StableCRL/DCC on NYU Torch"
 echo "job=${SLURM_ARRAY_JOB_ID:-local} array_task=${ARRAY_TASK_ID}"
 echo "account=${SLURM_JOB_ACCOUNT:-dry-run-or-unspecified}"
 echo "configs=${TOTAL_CONFIGS} array_max=${ARRAY_MAX} tasks_per_gpu=${TASKS_PER_GPU}"
@@ -204,9 +205,6 @@ for ((slot = 0; slot < SLOTS; slot++)); do
   COMMAND=(
     "$PYTHON_BIN" "$RUNNER"
     --seed "$SEED"
-    --task-sequence "$TASK_SEQUENCE"
-    --base-steps "$BASE_STEPS"
-    --steps-per-task "$STEPS_PER_TASK"
     --num-envs "$NUM_ENVS"
     --num-eval-envs "$NUM_EVAL_ENVS"
     --rollout-length "$ROLLOUT_LENGTH"
@@ -221,18 +219,7 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     --num-eval-steps "$NUM_EVAL_STEPS"
     --num-reset-steps "$NUM_RESET_STEPS"
     --repetition-factor "$REPETITION_FACTOR"
-    --max-cubes "$MAX_CUBES"
     --pd-duration "$PD_DURATION"
-    --dcc-dyn-weight "$DCC_DYN_WEIGHT"
-    --dcc-shared-width "$DCC_SHARED_WIDTH"
-    --dcc-shared-depth "$DCC_SHARED_DEPTH"
-    --dcc-task-width "$DCC_TASK_WIDTH"
-    --dcc-task-depth "$DCC_TASK_DEPTH"
-    --dcc-combine-mode "$DCC_COMBINE_MODE"
-    --dcc-goal-encoder-mode "$DCC_GOAL_ENCODER_MODE"
-    --boundary-checkpoint-dir "$RUN_CHECKPOINT_DIR"
-    --task-data-version "$TASK_DATA_VERSION"
-    --mjx-impl "$MJX_IMPL"
     --wandb-project-name "$WANDB_PROJECT_NAME"
     --wandb-mode "$WANDB_MODE"
     --wandb-dir "$WANDB_DIR"
@@ -240,16 +227,57 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     --wandb-name-tag "$RUN_ID"
   )
   [ -n "$WANDB_ENTITY" ] && COMMAND+=(--wandb-entity "$WANDB_ENTITY")
-  [ -n "$DCC_DYN_WEIGHT_AFTER_TASK0" ] \
-    && COMMAND+=(--dcc-dyn-weight-after-task0 "$DCC_DYN_WEIGHT_AFTER_TASK0")
-  COMMAND+=("$(bool_flag carry-actor "$CARRY_ACTOR")")
-  COMMAND+=("$(bool_flag dcc-carry-shared "$DCC_CARRY_SHARED")")
+
+  if [ "$RUNNER" = "stable_crl.py" ]; then
+    COMMAND+=(
+      --env-id "$ENV_ID"
+      --num-timesteps "$BASE_STEPS"
+      --architecture "$ARCHITECTURE"
+      --num-blocks "$NUM_BLOCKS"
+      --hidden-dim "$HIDDEN_DIM"
+      --mjx-impl "$MJX_IMPL"
+    )
+  else
+    COMMAND+=(
+      --task-sequence "$TASK_SEQUENCE"
+      --base-steps "$BASE_STEPS"
+      --steps-per-task "$STEPS_PER_TASK"
+      --max-cubes "$MAX_CUBES"
+      --boundary-checkpoint-dir "$RUN_CHECKPOINT_DIR"
+      --task-data-version "$TASK_DATA_VERSION"
+      --mjx-impl "$MJX_IMPL"
+    )
+    COMMAND+=("$(bool_flag resume "$RESUME")")
+  fi
+
+  if [ "$RUNNER" = "continual_crl.py" ]; then
+    COMMAND+=(
+      --actor-lifecycle "$ACTOR_LIFECYCLE"
+      --critic-lifecycle "$CRITIC_LIFECYCLE"
+      --vanilla-width "$VANILLA_WIDTH"
+      --vanilla-depth "$VANILLA_DEPTH"
+    )
+  elif [ "$RUNNER" = "continual_dcc.py" ]; then
+    COMMAND+=(
+      --dcc-dyn-weight "$DCC_DYN_WEIGHT"
+      --dcc-shared-width "$DCC_SHARED_WIDTH"
+      --dcc-shared-depth "$DCC_SHARED_DEPTH"
+      --dcc-task-width "$DCC_TASK_WIDTH"
+      --dcc-task-depth "$DCC_TASK_DEPTH"
+      --dcc-combine-mode "$DCC_COMBINE_MODE"
+      --dcc-goal-encoder-mode "$DCC_GOAL_ENCODER_MODE"
+    )
+    [ -n "$DCC_DYN_WEIGHT_AFTER_TASK0" ] \
+      && COMMAND+=(--dcc-dyn-weight-after-task0 "$DCC_DYN_WEIGHT_AFTER_TASK0")
+    COMMAND+=("$(bool_flag carry-actor "$CARRY_ACTOR")")
+    COMMAND+=("$(bool_flag dcc-carry-shared "$DCC_CARRY_SHARED")")
+  fi
+
   COMMAND+=("$(bool_flag use-pd "$USE_PD")")
   COMMAND+=("$(bool_flag track "$TRACK")")
   COMMAND+=("$(bool_flag save-checkpoint "$SAVE_CHECKPOINT")")
   COMMAND+=("$(bool_flag record-videos "$RECORD_VIDEOS")")
   COMMAND+=("$(bool_flag visualize-samples "$VISUALIZE_SAMPLES")")
-  COMMAND+=("$(bool_flag resume "$RESUME")")
 
   echo "[slot $slot] config=$CONFIG_IDX run=$RUN_ID"
   printf '[slot %s] command: ' "$slot"

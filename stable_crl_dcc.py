@@ -45,6 +45,7 @@ from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
 from continual.dcc_networks import make_dcc_networks, masked_dynamics_mse
+from continual.vanilla_networks import make_vanilla_crl_networks
 from continual.semantic_layout import SemanticLayout
 from continual.semantic_wrapper import SemanticPadWrapper
 
@@ -221,6 +222,12 @@ class Args:
     dcc_goal_encoder_mode: Literal["shared", "projected"] = "shared"
     dcc_carry_shared: bool = True
 
+    # semantic-wrapper control: ordinary CRL without DCC decomposition
+    critic_family: Literal["dcc", "vanilla"] = "dcc"
+    vanilla_width: int = 512
+    vanilla_depth: int = 3
+    vanilla_carry_critic: bool = True
+
 @flax.struct.dataclass
 class CRLTrainingState:
     """Contains training state for the learner"""
@@ -385,14 +392,14 @@ class Actor(nn.Module):
         return mean, log_std
 
 
-def make_inference_fn(dcc_networks):
+def make_inference_fn(contrastive_networks):
     """Creates params and inference function for the CRL agent."""
     def make_policy(params, deterministic: bool = False):
 
         def policy(observations, goals, key_sample):
 
-            goals = dcc_networks.apply_goal(params['critic'], goals)
-            means, log_stds = dcc_networks.actor.apply(
+            goals = contrastive_networks.apply_goal(params['critic'], goals)
+            means, log_stds = contrastive_networks.actor.apply(
                 params['actor'], observations, goals
             )
 
@@ -511,21 +518,32 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             f"{layout.observation_size}, goal={goal_size}/{layout.goal_size}"
         )
 
-    # DCC uses a permutation-aware DeepSets actor and decomposed critic.
-    dcc = make_dcc_networks(
-        layout=layout,
-        action_size=action_size,
-        rep_size=args.rep_size,
-        shared_width=args.dcc_shared_width,
-        task_width=args.dcc_task_width,
-        shared_depth=args.dcc_shared_depth,
-        task_depth=args.dcc_task_depth,
-        combine_mode=args.dcc_combine_mode,
-        goal_encoder_mode=args.dcc_goal_encoder_mode,
-    )
-    initialized = dcc.init_params(key_sa)
+    if args.critic_family == "dcc":
+        networks = make_dcc_networks(
+            layout=layout,
+            action_size=action_size,
+            rep_size=args.rep_size,
+            shared_width=args.dcc_shared_width,
+            task_width=args.dcc_task_width,
+            shared_depth=args.dcc_shared_depth,
+            task_depth=args.dcc_task_depth,
+            combine_mode=args.dcc_combine_mode,
+            goal_encoder_mode=args.dcc_goal_encoder_mode,
+        )
+    elif args.critic_family == "vanilla":
+        networks = make_vanilla_crl_networks(
+            layout=layout,
+            action_size=action_size,
+            rep_size=args.rep_size,
+            width=args.vanilla_width,
+            depth=args.vanilla_depth,
+        )
+    else:
+        raise ValueError(f"unknown critic_family={args.critic_family!r}")
+
+    initialized = networks.init_params(key_sa)
     actor_state = TrainState.create(
-        apply_fn=dcc.actor.apply,
+        apply_fn=networks.actor.apply,
         params=initialized.pop("actor"),
         tx=optax.adam(learning_rate=args.actor_learning_rate)
     )
@@ -538,30 +556,54 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         if carry.get("actor") is not None:
             actor_state = actor_state.replace(params=carry["actor"])
         critic_params = dict(critic_state.params)
-        if args.dcc_carry_shared:
-            for group in dcc.shared_groups:
+        if args.critic_family == "dcc" and args.dcc_carry_shared:
+            for group in networks.shared_groups:
                 critic_params[group] = carry["critic_shared"][group]
-        # phi_task and the critic optimizer are intentionally fresh for the
-        # new task. Shared knowledge lives in the carried parameter groups.
+        elif (
+            args.critic_family == "vanilla"
+            and args.vanilla_carry_critic
+            and carry.get("critic") is not None
+        ):
+            critic_params = carry["critic"]
         critic_state = critic_state.replace(params=critic_params)
-        print(
-            f"Continual transfer: "
-            f"{'restored' if args.dcc_carry_shared else 'reset'} shared DCC "
-            f"groups for task_index={task_index}; reset phi_task and "
-            "optimizer state."
+        if args.critic_family == "dcc":
+            print(
+                "Continual transfer: "
+                f"{'restored' if args.dcc_carry_shared else 'reset'} "
+                f"shared DCC groups for task_index={task_index}; reset "
+                "phi_task and optimizer state."
+            )
+        else:
+            print(
+                "Continual transfer: "
+                f"{'restored' if args.vanilla_carry_critic else 'reset'} "
+                f"the vanilla critic for task_index={task_index}; "
+                "optimizer state is fresh."
+            )
+    dyn_weight = 0.0
+    if args.critic_family == "dcc":
+        dyn_weight = (
+            args.dcc_dyn_weight
+            if task_index == 0 or args.dcc_dyn_weight_after_task0 is None
+            else args.dcc_dyn_weight_after_task0
         )
-    dyn_weight = (
-        args.dcc_dyn_weight
-        if task_index == 0 or args.dcc_dyn_weight_after_task0 is None
-        else args.dcc_dyn_weight_after_task0
-    )
+        architecture_description = (
+            f"shared_width={args.dcc_shared_width}, "
+            f"task_width={args.dcc_task_width}, "
+            f"combine={args.dcc_combine_mode}, "
+            f"goal_encoder={args.dcc_goal_encoder_mode}, "
+            f"dyn_weight={dyn_weight}"
+        )
+    else:
+        architecture_description = (
+            f"width={args.vanilla_width}, depth={args.vanilla_depth}, "
+            "no task head, no dynamics head"
+        )
     print(
-        f"\nDCC parameters: actor={count_parameters(actor_state.params)}, "
+        f"\n{args.critic_family.upper()} parameters: "
+        f"actor={count_parameters(actor_state.params)}, "
         f"critic={count_parameters(critic_state.params)}; "
-        f"max_cubes={args.max_cubes}, shared_width={args.dcc_shared_width}, "
-        f"task_width={args.dcc_task_width}, combine={args.dcc_combine_mode}, "
-        f"goal_encoder={args.dcc_goal_encoder_mode}, "
-        f"dyn_weight={dyn_weight}\n"
+        f"max_cubes={args.max_cubes}, {architecture_description}\n"
     )
 
     # Trainstate
@@ -603,7 +645,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         )
     buffer_state = jax.jit(replay_buffer.init)(key_buffer)
 
-    make_policy = make_inference_fn(dcc)
+    make_policy = make_inference_fn(networks)
 
     entropy_cost_final = args.entropy_cost if args.entropy_cost_final is None else args.entropy_cost_final
     entropy_decay_steps = max(1, int(total_gradient_steps * args.entropy_decay_fraction))
@@ -634,11 +676,11 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
     )
 
     def actor_step(training_state, env, env_state, key, extra_fields, metrics_fields):
-        g_repr = dcc.apply_goal(
+        g_repr = networks.apply_goal(
             training_state.critic_state.params,
             env_state.info['target_goal'],
         )
-        means, log_stds = dcc.actor.apply(
+        means, log_stds = networks.actor.apply(
             training_state.actor_state.params, env_state.obs, g_repr
         )
         stds = jnp.exp(log_stds)
@@ -703,8 +745,8 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             state = transitions.observation
             goal = transitions.extras['future_goal']
             frozen_critic = jax.lax.stop_gradient(critic_params)
-            g_repr = dcc.apply_goal(frozen_critic, goal)
-            means, log_stds = dcc.actor.apply(actor_params, state, g_repr)
+            g_repr = networks.apply_goal(frozen_critic, goal)
+            means, log_stds = networks.actor.apply(actor_params, state, g_repr)
             stds = jnp.exp(log_stds)
             x_ts = means + stds * jax.random.normal(key, shape=means.shape, dtype=means.dtype)
             action = nn.tanh(x_ts)
@@ -712,7 +754,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             log_prob -= jnp.log((1 - jnp.square(action)) + 1e-6)
             log_prob = log_prob.sum(-1)           # dimension = B
 
-            sa_repr = dcc.apply_sa(frozen_critic, state, action)
+            sa_repr = networks.apply_sa(frozen_critic, state, action)
             qf_pi = -jnp.sqrt(jnp.sum((sa_repr - g_repr) ** 2, axis=-1))
 
             entropy_cost = get_entropy_cost(gradient_steps)
@@ -761,8 +803,8 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             action = transitions.action
             goal = transitions.extras['future_goal']
 
-            sa_repr = dcc.apply_sa(critic_params, state, action)
-            g_repr = dcc.apply_goal(critic_params, goal)
+            sa_repr = networks.apply_sa(critic_params, state, action)
+            g_repr = networks.apply_goal(critic_params, goal)
 
             # InfoNCE
             logits = -jnp.sqrt(jnp.sum((sa_repr[:, None, :] - g_repr[None, :, :]) ** 2, axis=-1)) #shape = BxB
@@ -775,14 +817,17 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
             logsumexp_loss = args.logsumexp_cost * jnp.mean(logsumexp**2)
 
-            predicted_next, _ = dcc.apply_dynamics(
-                critic_params, state, action
-            )
-            dynamics_loss = masked_dynamics_mse(
-                predicted_next,
-                transitions.extras['next_achieved_goal'],
-                args.max_cubes,
-            )
+            if args.critic_family == "dcc":
+                predicted_next, _ = networks.apply_dynamics(
+                    critic_params, state, action
+                )
+                dynamics_loss = masked_dynamics_mse(
+                    predicted_next,
+                    transitions.extras['next_achieved_goal'],
+                    args.max_cubes,
+                )
+            else:
+                dynamics_loss = jnp.asarray(0.0, dtype=logits.dtype)
             critic_loss = (
                 info_nce_loss + logsumexp_loss
                 + dyn_weight * dynamics_loss
@@ -1073,6 +1118,14 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
     if args.track:
         wandb.finish()
 
+    if args.critic_family == "vanilla":
+        return {
+            "actor": training_state.actor_state.params,
+            "critic": training_state.critic_state.params,
+            "task_index": task_index,
+            "env_id": args.env_id,
+        }
+
     task_bank = list(carry.get("task_bank", ())) if carry is not None else []
     task_snapshot = {
         "task_index": task_index,
@@ -1088,7 +1141,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         "actor": training_state.actor_state.params,
         "critic_shared": {
             group: training_state.critic_state.params[group]
-            for group in dcc.shared_groups
+            for group in networks.shared_groups
         },
         "task_index": task_index,
         "env_id": args.env_id,

@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic StableCRL-DCC experiment cells for NYU Torch HPC.
+"""Deterministic BuilderBench StableCRL/DCC cells for NYU Torch.
 
-The active batch mirrors the SGCRL batch used for the continual DCC study:
-
-* matched seeds 5/6/7;
-* persistent actor and shared DCC groups, with masked dynamics on/off;
-* repetition-12 StableCRL/CRTR probes on two long-horizon tasks.
-
-The shell launcher consumes ``--setting`` output. Values are shell-quoted so
-``eval \"$(python experiment_configs.py --setting N)\"`` is safe for every
-value produced by this file.
+Array order is part of the protocol. Indices 0--23 are the baseline-first
+stage: upstream individual-task reproduction, wrapper controls, single-task
+DCC, and continual vanilla CRL reset/reset and persistent/persistent. Indices
+24--35 are the continual DCC/CRTR stage.
 """
 from __future__ import annotations
 
@@ -19,6 +14,7 @@ import math
 import re
 import shlex
 import sys
+from collections import Counter
 from typing import Any
 
 
@@ -27,16 +23,32 @@ DEFAULT_TASK_SEQUENCE = (
     "creative-1-task1,creative-1-task2,creative-2-task1,"
     "creative-3-task1,creative-4-task1"
 )
+INDIVIDUAL_TASKS = (
+    ("three_stack", "creative-3-task1"),
+    ("four_stack", "creative-4-task1"),
+)
+BASELINE_FIRST_END = 23
 _TASK_ID = re.compile(r"^creative-(\d+)-task(\d+)$")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 
 
-def _cell(name: str, seed: int, **overrides: Any) -> dict[str, Any]:
+def _cell(
+    name: str,
+    seed: int,
+    *,
+    runner: str = "continual_dcc.py",
+    task_sequence: str = DEFAULT_TASK_SEQUENCE,
+    **overrides: Any,
+) -> dict[str, Any]:
+    task_ids = task_sequence.split(",")
     config: dict[str, Any] = {
         "name": name,
-        "runner": "continual_dcc.py",
+        "runner": runner,
         "seed": seed,
-        "task_sequence": DEFAULT_TASK_SEQUENCE,
+        "env_id": task_ids[0] if len(task_ids) == 1 else "",
+        "task_sequence": task_sequence,
+        "actor_lifecycle": "persistent",
+        "critic_lifecycle": "persistent",
         "carry_actor": True,
         "dcc_carry_shared": True,
         "dcc_dyn_weight": 1.0,
@@ -47,6 +59,11 @@ def _cell(name: str, seed: int, **overrides: Any) -> dict[str, Any]:
         "dcc_shared_depth": 3,
         "dcc_task_width": 256,
         "dcc_task_depth": 4,
+        "vanilla_width": 512,
+        "vanilla_depth": 3,
+        "architecture": "block",
+        "num_blocks": 8,
+        "hidden_dim": 1024,
         "repetition_factor": 1,
         "max_cubes": 8,
         "use_pd": True,
@@ -58,41 +75,105 @@ def _cell(name: str, seed: int, **overrides: Any) -> dict[str, Any]:
 
 
 def build_configs() -> list[dict[str, Any]]:
-    """Return the active 12-run batch in stable array-index order."""
-    configs = [
-        *[
-            _cell("dcc_persistent_actor_dynamics", seed)
-            for seed in SEEDS
-        ],
-        *[
+    """Return the 36-run baseline-first batch in stable index order."""
+    configs: list[dict[str, Any]] = []
+
+    # 0--5: upstream algorithm on two paper-style cells.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
             _cell(
-                "dcc_persistent_actor_no_dynamics",
+                f"upstream_scaled_crtr_{task_name}",
                 seed,
-                dcc_dyn_weight=0.0,
+                runner="stable_crl.py",
+                task_sequence=env_id,
+                repetition_factor=12,
             )
             for seed in SEEDS
-        ],
-        *[
+        )
+
+    # 6--11: same tasks through semantic padding + set networks, no DCC.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
             _cell(
-                "dcc_crtr12_three_stack",
+                f"wrapped_vanilla_crl_{task_name}",
                 seed,
-                task_sequence="creative-3-task1",
+                runner="continual_crl.py",
+                task_sequence=env_id,
+                actor_lifecycle="reset",
+                critic_lifecycle="reset",
+                repetition_factor=12,
+            )
+            for seed in SEEDS
+        )
+
+    # 12--17: one-task DCC controls on the same two tasks.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
+            _cell(
+                f"dcc_single_{task_name}",
+                seed,
+                task_sequence=env_id,
                 carry_actor=False,
                 repetition_factor=12,
             )
             for seed in SEEDS
-        ],
-        *[
-            _cell(
-                "dcc_crtr12_four_stack",
-                seed,
-                task_sequence="creative-4-task1",
-                carry_actor=False,
-                repetition_factor=12,
-            )
-            for seed in SEEDS
-        ],
-    ]
+        )
+
+    # 18--23: requested vanilla continual lifecycle baselines.
+    configs.extend(
+        _cell(
+            "crl_reset_reset",
+            seed,
+            runner="continual_crl.py",
+            actor_lifecycle="reset",
+            critic_lifecycle="reset",
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "crl_persistent_persistent",
+            seed,
+            runner="continual_crl.py",
+            actor_lifecycle="persistent",
+            critic_lifecycle="persistent",
+        )
+        for seed in SEEDS
+    )
+
+    # 24--35: existing SGCRL-style continual DCC and CRTR controls.
+    configs.extend(
+        _cell("dcc_persistent_actor_dynamics", seed)
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "dcc_persistent_actor_no_dynamics",
+            seed,
+            dcc_dyn_weight=0.0,
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "dcc_crtr12_three_stack",
+            seed,
+            task_sequence="creative-3-task1",
+            carry_actor=False,
+            repetition_factor=12,
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "dcc_crtr12_four_stack",
+            seed,
+            task_sequence="creative-4-task1",
+            carry_actor=False,
+            repetition_factor=12,
+        )
+        for seed in SEEDS
+    )
     validate_configs(configs)
     return configs
 
@@ -103,7 +184,10 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
         "name",
         "runner",
         "seed",
+        "env_id",
         "task_sequence",
+        "actor_lifecycle",
+        "critic_lifecycle",
         "carry_actor",
         "dcc_carry_shared",
         "dcc_dyn_weight",
@@ -112,6 +196,11 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
         "repetition_factor",
         "max_cubes",
     }
+    allowed_runners = {
+        "stable_crl.py",
+        "continual_crl.py",
+        "continual_dcc.py",
+    }
     identities: set[tuple[str, int]] = set()
     for index, config in enumerate(configs):
         missing = sorted(required - config.keys())
@@ -119,8 +208,12 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
             raise ValueError(f"config {index} is missing keys: {missing}")
         if not _NAME.fullmatch(str(config["name"])):
             raise ValueError(f"invalid config name: {config['name']!r}")
-        if config["runner"] != "continual_dcc.py":
+        if config["runner"] not in allowed_runners:
             raise ValueError(f"unsupported runner: {config['runner']!r}")
+        if config["actor_lifecycle"] not in {"reset", "persistent"}:
+            raise ValueError("actor_lifecycle must be reset or persistent")
+        if config["critic_lifecycle"] not in {"reset", "persistent"}:
+            raise ValueError("critic_lifecycle must be reset or persistent")
         if config["dcc_combine_mode"] not in {"add", "concat"}:
             raise ValueError("dcc_combine_mode must be add or concat")
         if config["dcc_goal_encoder_mode"] not in {"shared", "projected"}:
@@ -142,6 +235,9 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
                 f"config {index} max_cubes={config['max_cubes']} cannot fit "
                 f"a {largest_task}-cube task"
             )
+        if config["runner"] == "stable_crl.py":
+            if len(task_ids) != 1 or config["env_id"] != task_ids[0]:
+                raise ValueError("upstream runs must select exactly one env_id")
 
         identity = (str(config["name"]), int(config["seed"]))
         if identity in identities:
@@ -158,21 +254,24 @@ def _shell_value(value: Any) -> str:
 
 
 def _print_list(configs: list[dict[str, Any]]) -> None:
-    print(f"Total: {len(configs)} configurations")
-    print(" idx  name                                  seed  dyn   rep  tasks")
-    print("----  ------------------------------------  ----  ----  ---  -----")
+    counts = Counter(config["runner"] for config in configs)
+    print(
+        f"Total: {len(configs)} configurations; baseline-first: "
+        f"0-{BASELINE_FIRST_END}; runners={dict(counts)}"
+    )
+    print(" idx  name                                  seed  runner            tasks")
+    print("----  ------------------------------------  ----  ----------------  -----")
     for index, config in enumerate(configs):
         task_count = len(config["task_sequence"].split(","))
         print(
             f"{index:>4}  {config['name']:<36}  {config['seed']:>4}  "
-            f"{config['dcc_dyn_weight']:>4}  "
-            f"{config['repetition_factor']:>3}  {task_count:>5}"
+            f"{config['runner']:<16}  {task_count:>5}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Enumerate the StableCRL-DCC Torch HPC experiment batch."
+        description="Enumerate the StableCRL/DCC Torch HPC experiment batch."
     )
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--setting", type=int)

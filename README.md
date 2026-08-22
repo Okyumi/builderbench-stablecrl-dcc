@@ -110,18 +110,25 @@ shapes rather than assigning permanent semantics to padded indices.
   implementation-note convention.
 - `docs/2026-08-21_torch_hpc_experiments.md` documents the Torch Slurm array,
   SGCRL-matched cells, environment setup, and checkpoint layout.
+- `docs/2026-08-22_continual_crl_baselines_and_controls.md` documents the
+  encoder design, vanilla reset/reset and persistent/persistent lifecycles,
+  individual-task controls, and the baseline-first run order.
 
 ## NYU Torch HPC
 
-The active batch contains 12 runs: seeds 5/6/7 for persistent-actor DCC with
-and without masked dynamics, plus repetition-12 probes on the three- and
-four-cube long-horizon tasks.
+The active batch contains 36 runs. Indices 0--23 are the baseline-first stage:
+upstream individual-task reproductions, wrapper-only vanilla controls,
+single-task DCC controls, and vanilla continual reset/reset and
+persistent/persistent. Indices 24--35 contain the continual DCC and CRTR
+cells. Every group uses matched seeds 5/6/7.
 
 ```bash
 python experiment_configs.py --list
 DRY_RUN=true CONFIG_INDEX=0 bash DRAFT.sh
 my_slurm_accounts
-sbatch --account=torch_pr_XXX_XXXXX DRAFT.sh
+sbatch --account=torch_pr_XXX_XXXXX --array=0-23 DRAFT.sh
+# After validating the individual-task controls:
+sbatch --account=torch_pr_XXX_XXXXX --array=24-35 DRAFT.sh
 ```
 
 Torch requires the allocation account and does not require a manually chosen

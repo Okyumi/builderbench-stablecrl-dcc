@@ -13,13 +13,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ExperimentConfigsTest(unittest.TestCase):
-    def test_active_batch_matches_sgcrl_structure(self):
+    def test_batch_is_baseline_first_and_retains_sgcrl_cells(self):
         configs = experiment_configs.build_configs()
-        self.assertEqual(len(configs), 12)
+        self.assertEqual(len(configs), 36)
         self.assertEqual({config["seed"] for config in configs}, {5, 6, 7})
         self.assertEqual(
             Counter(config["name"] for config in configs),
             {
+                "upstream_scaled_crtr_three_stack": 3,
+                "upstream_scaled_crtr_four_stack": 3,
+                "wrapped_vanilla_crl_three_stack": 3,
+                "wrapped_vanilla_crl_four_stack": 3,
+                "dcc_single_three_stack": 3,
+                "dcc_single_four_stack": 3,
+                "crl_reset_reset": 3,
+                "crl_persistent_persistent": 3,
                 "dcc_persistent_actor_dynamics": 3,
                 "dcc_persistent_actor_no_dynamics": 3,
                 "dcc_crtr12_three_stack": 3,
@@ -27,12 +35,53 @@ class ExperimentConfigsTest(unittest.TestCase):
             },
         )
 
-        dynamics = configs[:3]
-        no_dynamics = configs[3:6]
-        crtr = configs[6:]
+        self.assertTrue(
+            all(config["runner"] == "stable_crl.py" for config in configs[:6])
+        )
+        self.assertTrue(
+            all(
+                config["runner"] == "continual_crl.py"
+                for config in configs[6:12]
+            )
+        )
+        reset = configs[18:21]
+        persistent = configs[21:24]
+        self.assertTrue(
+            all(
+                config["repetition_factor"] == 12
+                for config in configs[:18]
+            )
+        )
+        self.assertTrue(
+            all(
+                config["actor_lifecycle"] == "reset"
+                and config["critic_lifecycle"] == "reset"
+                for config in reset
+            )
+        )
+        self.assertTrue(
+            all(
+                config["repetition_factor"] == 1
+                for config in reset + persistent
+            )
+        )
+        self.assertTrue(
+            all(
+                config["actor_lifecycle"] == "persistent"
+                and config["critic_lifecycle"] == "persistent"
+                for config in persistent
+            )
+        )
+
+        dynamics = configs[24:27]
+        no_dynamics = configs[27:30]
+        crtr = configs[30:]
         self.assertTrue(all(config["carry_actor"] for config in dynamics))
         self.assertTrue(
             all(config["dcc_dyn_weight"] == 1.0 for config in dynamics)
+        )
+        self.assertTrue(
+            all(config["repetition_factor"] == 1 for config in dynamics)
         )
         self.assertTrue(
             all(config["dcc_dyn_weight"] == 0.0 for config in no_dynamics)
@@ -52,24 +101,24 @@ class ExperimentConfigsTest(unittest.TestCase):
                 text=True,
             ).strip()
 
-        self.assertEqual(output("--total"), "12")
-        self.assertEqual(output("--array-max"), "11")
+        self.assertEqual(output("--total"), "36")
+        self.assertEqual(output("--array-max"), "35")
         self.assertEqual(
-            output("--array-max", "--tasks-per-gpu", "2"), "5"
+            output("--array-max", "--tasks-per-gpu", "2"), "17"
         )
         setting = output("--setting", "0")
-        self.assertIn("NAME=dcc_persistent_actor_dynamics", setting)
+        self.assertIn("NAME=upstream_scaled_crtr_three_stack", setting)
         self.assertIn("SEED=5", setting)
         self.assertIn("DCC_DYN_WEIGHT_AFTER_TASK0=''", setting)
 
-    def test_draft_dry_run_builds_resume_safe_command(self):
+    def _draft_output(self, config_index):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             environment = os.environ.copy()
             environment.update(
                 {
                     "DRY_RUN": "true",
-                    "CONFIG_INDEX": "0",
+                    "CONFIG_INDEX": str(config_index),
                     "TASKS_PER_GPU": "1",
                     "PYTHON_BIN": sys.executable,
                     "SCRATCH": str(root),
@@ -86,18 +135,26 @@ class ExperimentConfigsTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            output = completed.stdout
-            self.assertIn("Dry run complete", output)
-            self.assertIn("--dcc-dyn-weight 1.0", output)
-            self.assertIn("--carry-actor", output)
-            self.assertIn(
-                str(
-                    root
-                    / "checkpoints"
-                    / "dcc_persistent_actor_dynamics_seed5"
-                ),
-                output,
-            )
+            return completed.stdout
+
+    def test_draft_dry_run_builds_all_runner_families(self):
+        upstream = self._draft_output(0)
+        self.assertIn("Dry run complete", upstream)
+        self.assertIn("stable_crl.py", upstream)
+        self.assertIn("--env-id creative-3-task1", upstream)
+        self.assertIn("--mjx-impl warp", upstream)
+        self.assertNotIn("--task-sequence", upstream)
+
+        vanilla = self._draft_output(18)
+        self.assertIn("continual_crl.py", vanilla)
+        self.assertIn("--actor-lifecycle reset", vanilla)
+        self.assertIn("--critic-lifecycle reset", vanilla)
+        self.assertIn("--resume", vanilla)
+
+        dcc = self._draft_output(24)
+        self.assertIn("continual_dcc.py", dcc)
+        self.assertIn("--dcc-dyn-weight 1.0", dcc)
+        self.assertIn("--carry-actor", dcc)
 
 
 if __name__ == "__main__":

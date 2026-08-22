@@ -1,12 +1,19 @@
 import os
+import sys
 
 xla_flags = os.environ.get("XLA_FLAGS", "")
 xla_flags += " --xla_gpu_triton_gemm_any=True"
 os.environ["XLA_FLAGS"] = xla_flags
-os.environ["MUJOCO_GL"] = "egl"
+if "MUJOCO_GL" not in os.environ and sys.platform.startswith("linux"):
+    os.environ["MUJOCO_GL"] = "egl"
 
 import jax
-jax.config.update("jax_compilation_cache_dir", "/n/fs/pvl-procrep/builderbench/jax_cache")  # or a persistent path
+jax.config.update(
+    "jax_compilation_cache_dir",
+    os.environ.get(
+        "JAX_COMPILATION_CACHE_DIR", "/tmp/builderbench_jax_cache"
+    ),
+)
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
@@ -144,7 +151,7 @@ class Args:
     # logging and checkpointing
     track: bool = True
     wandb_project_name: str = "rl"
-    wandb_entity: str = 'david-yan'
+    wandb_entity: str | None = None
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'
@@ -171,7 +178,7 @@ class Args:
     num_envs: int = 1024
     num_eval_envs: int = 128
     env_early_termination: bool = False # note!
-    env_episode_length: int = None
+    env_episode_length: int | None = None
     permutation_invariant_reward: bool = True   # invariance to the order of cubes in any structure
 
     # algorithm
@@ -199,6 +206,7 @@ class Args:
     use_non_residual_critic_encoders: bool = False  # block architecture only: use the SA/G encoder MLPs from crl.py
     use_pd: bool = True
     pd_duration: int = 5
+    mjx_impl: Literal["warp", "jax"] = "warp"
 
 @flax.struct.dataclass
 class CRLTrainingState:
@@ -431,6 +439,7 @@ def main(args: Args):
 
     # Initialize environment
     env_class, default_config = make_env(args)
+    default_config.impl = args.mjx_impl
     if args.use_pd:
         assert default_config.episode_length % args.pd_duration == 0, "Environment episode length must be divisible by pd_duration"
         episode_length = default_config.episode_length // args.pd_duration
