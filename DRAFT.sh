@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=bb_stablecrl
+#SBATCH --account=torch_pr_301_tandon_advanced
 #SBATCH --time=47:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
