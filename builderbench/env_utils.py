@@ -8,6 +8,9 @@ from etils import epath
 from typing import Any, Dict, Optional
 
 from builderbench.constants import _TIME_STEPS, _MJX_PARAMS
+from builderbench.mjx_warp_compat import apply_mjx_warp_compat
+
+apply_mjx_warp_compat()
 
 @struct.dataclass
 class State:

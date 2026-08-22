@@ -13,3 +13,6 @@ tea_debug.log
 sweep.sh
 .jax_cache
 .claude/
+.DS_Store
+logs/
+wandb/

@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,11 @@ class ExperimentConfigsTest(unittest.TestCase):
         self.assertTrue(
             all(len(config["task_sequence"].split(",")) == 1 for config in crtr)
         )
+        names = {config["name"] for config in configs}
+        self.assertEqual(len(names), 12)
+        self.assertTrue(
+            all(config["wandb_group"] == config["name"] for config in configs)
+        )
 
     def test_cli_counts_and_array_sizes(self):
         def output(*args):
@@ -144,6 +150,12 @@ class ExperimentConfigsTest(unittest.TestCase):
         self.assertIn("--env-id creative-3-task1", upstream)
         self.assertIn("--mjx-impl warp", upstream)
         self.assertNotIn("--task-sequence", upstream)
+        self.assertIn(
+            "--wandb-group torch_dcc__upstream_scaled_crtr_three_stack",
+            upstream,
+        )
+        self.assertIn("--wandb-project-name builderbench-stablecrl-dcc", upstream)
+        self.assertNotIn("--wandb-entity", upstream)
 
         vanilla = self._draft_output(18)
         self.assertIn("continual_crl.py", vanilla)
@@ -155,6 +167,36 @@ class ExperimentConfigsTest(unittest.TestCase):
         self.assertIn("continual_dcc.py", dcc)
         self.assertIn("--dcc-dyn-weight 1.0", dcc)
         self.assertIn("--carry-actor", dcc)
+
+    def test_draft_finds_repo_when_slurm_copies_the_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            spool = Path(directory) / "jobspool"
+            spool.mkdir()
+            shutil.copy(REPO_ROOT / "DRAFT.sh", spool / "DRAFT.sh")
+            environment = os.environ.copy()
+            environment.pop("REPO_DIR", None)
+            environment.update(
+                {
+                    "DRY_RUN": "true",
+                    "CONFIG_INDEX": "0",
+                    "TASKS_PER_GPU": "1",
+                    "PYTHON_BIN": sys.executable,
+                    "SCRATCH": str(Path(directory) / "scratch"),
+                    "SLURM_SUBMIT_DIR": str(REPO_ROOT),
+                }
+            )
+            completed = subprocess.run(
+                ["bash", str(spool / "DRAFT.sh")],
+                cwd=spool,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Dry run complete", completed.stdout)
+            self.assertIn(f"repo={REPO_ROOT}", completed.stdout)
+            self.assertIn(str(REPO_ROOT / "stable_crl.py"), completed.stdout)
+            self.assertNotIn("jobspool", completed.stdout)
 
 
 if __name__ == "__main__":

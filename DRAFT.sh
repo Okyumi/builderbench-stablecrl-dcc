@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --array=0-35
+#SBATCH --chdir=/scratch/yd2247/builderbench-stablecrl-dcc
 #SBATCH --output=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.out
 #SBATCH --error=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.err
 #SBATCH --mail-user=yd2247@nyu.edu
@@ -21,14 +22,46 @@
 
 set -euo pipefail
 
+# Slurm copies the batch script into /opt/slurm/data/slurmd/job*/. Do not treat
+# that spool directory as the repository.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${REPO_DIR:-$SCRIPT_DIR}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TASKS_PER_GPU="${TASKS_PER_GPU:-1}"
 DRY_RUN="${DRY_RUN:-false}"
 REQUIRE_GPU="${REQUIRE_GPU:-true}"
 
 SCRATCH_ROOT="${SCRATCH:-/scratch/${USER}}"
+DEFAULT_REPO_DIR="${SCRATCH_ROOT}/builderbench-stablecrl-dcc"
+
+resolve_repo_dir() {
+  local candidate
+  if [ -n "${REPO_DIR:-}" ]; then
+    candidate="$REPO_DIR"
+  else
+    candidate=""
+    for candidate in \
+      "$SCRIPT_DIR" \
+      "${SLURM_SUBMIT_DIR:-}" \
+      "$DEFAULT_REPO_DIR"
+    do
+      [ -n "$candidate" ] || continue
+      if [ -f "$candidate/experiment_configs.py" ]; then
+        break
+      fi
+      candidate=""
+    done
+  fi
+  if [ -z "$candidate" ] || [ ! -f "$candidate/experiment_configs.py" ]; then
+    echo "Could not find experiment_configs.py." >&2
+    echo "SCRIPT_DIR=${SCRIPT_DIR} SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-}" >&2
+    echo "Set REPO_DIR to the repository root." >&2
+    exit 1
+  fi
+  cd "$candidate" || exit 1
+  REPO_DIR="$(pwd)"
+}
+
+resolve_repo_dir
 VENV_DIR="${VENV_DIR:-${SCRATCH_ROOT}/.venvs/builderbench-stablecrl-dcc}"
 LOG_ROOT="${LOG_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/logs/runs}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/checkpoints}"
@@ -145,9 +178,8 @@ mkdir -p "$LOG_ROOT" "$CHECKPOINT_ROOT" "$WANDB_DIR" \
   "$XDG_CACHE_HOME" "$JAX_COMPILATION_CACHE_DIR" "$TMPDIR"
 setup_environment
 
-cd "$REPO_DIR"
-TOTAL_CONFIGS="$($PYTHON_BIN experiment_configs.py --total)"
-ARRAY_MAX="$($PYTHON_BIN experiment_configs.py --array-max \
+TOTAL_CONFIGS="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" --total)"
+ARRAY_MAX="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" --array-max \
   --tasks-per-gpu "$TASKS_PER_GPU")"
 ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 if [ -n "${CONFIG_INDEX:-}" ]; then
@@ -204,7 +236,7 @@ for ((slot = 0; slot < SLOTS; slot++)); do
   mkdir -p "$RUN_CHECKPOINT_DIR"
 
   COMMAND=(
-    "$PYTHON_BIN" "$RUNNER"
+    "$PYTHON_BIN" "$REPO_DIR/$RUNNER"
     --seed "$SEED"
     --num-envs "$NUM_ENVS"
     --num-eval-envs "$NUM_EVAL_ENVS"

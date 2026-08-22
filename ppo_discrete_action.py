@@ -43,7 +43,7 @@ class Args:
     # logging and checkpointing
     track: bool = False
     wandb_project_name: str = "builderbench"
-    wandb_entity: str = 'raj19'
+    wandb_entity: str | None = None
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'

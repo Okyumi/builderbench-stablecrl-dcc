@@ -43,7 +43,7 @@ class Args:
     # logging and checkpointing
     track: bool = True
     wandb_project_name: str = "rl"
-    wandb_entity: str = 'david-yan'
+    wandb_entity: str | None = None
     wandb_mode: str = 'online'
     wandb_dir: str = './'
     wandb_group: str = 'default'

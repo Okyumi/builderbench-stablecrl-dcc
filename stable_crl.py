@@ -150,7 +150,7 @@ class Args:
 
     # logging and checkpointing
     track: bool = True
-    wandb_project_name: str = "rl"
+    wandb_project_name: str = "builderbench-stablecrl-dcc"
     wandb_entity: str | None = None
     wandb_mode: str = 'online'
     wandb_dir: str = './'
@@ -420,7 +420,7 @@ def main(args: Args):
     if args.track:
         wandb.init(
             project=args.wandb_project_name,
-            entity=args.wandb_entity,
+            entity=args.wandb_entity or None,
             mode=args.wandb_mode,
             dir=args.wandb_dir,
             group=args.wandb_group,
