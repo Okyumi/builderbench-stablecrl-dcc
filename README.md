@@ -127,6 +127,8 @@ halfway through a checkpoint sequence.
   logger, padding-only/upstream controls, staged configs, and validation.
 - `docs/2026-08-23_residual_dcc_no_dynamics.md` records the diagnostic result,
   no-dynamics DCC redesign, repeated boundary evaluation, and new Torch gate.
+- `docs/2026-08-23_dcc_smoke_hpc.md` records the dedicated residual-DCC smoke
+  registry, short Torch launcher, acceptance criteria, and resume check.
 
 ## NYU Torch HPC
 
@@ -135,6 +137,19 @@ the residual no-dynamics DCC parity gate is 54--59; flat-CRL protocol controls
 are 60--65; and DCC protocol cells are 66--71. Every group uses seeds 5/6/7.
 `DRAFT.sh` defaults to `dcc_residual_gate`, so an unqualified six-slot array
 runs only the required 3-block/4-block DCC parity check.
+
+Run the dedicated three-cell GPU smoke gate before the 200M-step parity gate:
+
+```bash
+python smoke_experiment_configs.py --list
+DRY_RUN=true CONFIG_INDEX=2 bash DRAFT_DCC_SMOKE.sh
+sbatch --account=torch_pr_XXX_XXXXX DRAFT_DCC_SMOKE.sh
+```
+
+`DRAFT_DCC_SMOKE.sh` uses the production network dimensions but only
+2,097,152 environment steps per task. Its first two cells exercise CRTR on
+three- and four-cube tasks; its last cell exercises two-task transfer,
+continual matrices, boundary checkpoints, and resume.
 
 ```bash
 python experiment_configs.py --list

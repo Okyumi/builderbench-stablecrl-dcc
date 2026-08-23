@@ -30,6 +30,8 @@ TASKS_PER_GPU="${TASKS_PER_GPU:-1}"
 DRY_RUN="${DRY_RUN:-false}"
 REQUIRE_GPU="${REQUIRE_GPU:-true}"
 EXPERIMENT_STAGE="${EXPERIMENT_STAGE:-dcc_residual_gate}"
+CONFIG_REGISTRY="${CONFIG_REGISTRY:-experiment_configs.py}"
+RUN_TEST_PREFLIGHT="${RUN_TEST_PREFLIGHT:-false}"
 
 SCRATCH_ROOT="${SCRATCH:-/scratch/${USER}}"
 DEFAULT_REPO_DIR="${SCRATCH_ROOT}/builderbench-stablecrl-dcc"
@@ -46,14 +48,14 @@ resolve_repo_dir() {
       "$DEFAULT_REPO_DIR"
     do
       [ -n "$candidate" ] || continue
-      if [ -f "$candidate/experiment_configs.py" ]; then
+      if [ -f "$candidate/$CONFIG_REGISTRY" ]; then
         break
       fi
       candidate=""
     done
   fi
-  if [ -z "$candidate" ] || [ ! -f "$candidate/experiment_configs.py" ]; then
-    echo "Could not find experiment_configs.py." >&2
+  if [ -z "$candidate" ] || [ ! -f "$candidate/$CONFIG_REGISTRY" ]; then
+    echo "Could not find experiment registry: $CONFIG_REGISTRY" >&2
     echo "SCRIPT_DIR=${SCRIPT_DIR} SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-}" >&2
     echo "Set REPO_DIR to the repository root." >&2
     exit 1
@@ -63,6 +65,7 @@ resolve_repo_dir() {
 }
 
 resolve_repo_dir
+CONFIG_REGISTRY_PATH="$REPO_DIR/$CONFIG_REGISTRY"
 VENV_DIR="${VENV_DIR:-${SCRATCH_ROOT}/.venvs/builderbench-stablecrl-dcc}"
 LOG_ROOT="${LOG_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/logs/runs}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/checkpoints}"
@@ -182,14 +185,19 @@ mkdir -p "$LOG_ROOT" "$CHECKPOINT_ROOT" "$WANDB_DIR" \
   "$XDG_CACHE_HOME" "$JAX_COMPILATION_CACHE_DIR" "$TMPDIR"
 setup_environment
 
-TOTAL_CONFIGS="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" --total)"
-STAGE_START="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+if [ "$RUN_TEST_PREFLIGHT" = "true" ] && [ "$DRY_RUN" != "true" ]; then
+  echo "Running repository test preflight before launching experiments."
+  "$PYTHON_BIN" -m unittest discover -s "$REPO_DIR/tests" -p 'test_*.py'
+fi
+
+TOTAL_CONFIGS="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" --total)"
+STAGE_START="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" \
   --stage-start "$EXPERIMENT_STAGE")"
-STAGE_END="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+STAGE_END="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" \
   --stage-end "$EXPERIMENT_STAGE")"
-STAGE_CONFIGS="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+STAGE_CONFIGS="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" \
   --stage-total "$EXPERIMENT_STAGE")"
-ARRAY_MAX="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+ARRAY_MAX="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" \
   --stage-array-max \
   "$EXPERIMENT_STAGE" \
   --tasks-per-gpu "$TASKS_PER_GPU")"
@@ -216,6 +224,7 @@ echo "configs=${TOTAL_CONFIGS} stage=${EXPERIMENT_STAGE} " \
   "stage_range=${STAGE_START}-${STAGE_END} stage_configs=${STAGE_CONFIGS}"
 echo "array_max=${ARRAY_MAX} tasks_per_gpu=${TASKS_PER_GPU}"
 echo "repo=${REPO_DIR}"
+echo "config_registry=${CONFIG_REGISTRY_PATH}"
 echo "checkpoint_root=${CHECKPOINT_ROOT}"
 echo "JAX memory fraction=${XLA_PYTHON_CLIENT_MEM_FRACTION}"
 echo "============================================================"
@@ -241,7 +250,7 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     continue
   fi
 
-  eval "$("$PYTHON_BIN" experiment_configs.py --setting "$CONFIG_IDX")"
+  eval "$("$PYTHON_BIN" "$CONFIG_REGISTRY_PATH" --setting "$CONFIG_IDX")"
   if [ "$NUM_ENVS" -lt "$REPETITION_FACTOR" ]; then
     echo "NUM_ENVS=${NUM_ENVS} must be at least " \
       "REPETITION_FACTOR=${REPETITION_FACTOR} for config ${CONFIG_IDX}" >&2
