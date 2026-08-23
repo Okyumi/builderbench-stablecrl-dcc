@@ -1,8 +1,8 @@
-"""Permutation-safe, non-decomposed contrastive networks.
+"""Permutation-safe, non-decomposed set-network CRL control.
 
-This module is the semantic-wrapper control for DCC.  It deliberately uses
-the same masked-set actor and the same padded BuilderBench contract as DCC,
-but the critic is a conventional pair of state-action and goal encoders:
+This is the legacy semantic-padding diagnostic control. Its actor and critic
+use masked-set modules, while residual DCC uses separate flat upstream
+networks. The critic is a conventional pair of encoders:
 
     z_sa = phi(s, a)
     z_g  = psi(g)
@@ -19,10 +19,10 @@ from typing import Callable
 import jax
 import numpy as np
 
-from continual.dcc_networks import (
+from continual.set_networks import (
     SetActor,
     SetGoalEncoder,
-    TaskStateActionEncoder,
+    SetStateActionEncoder,
 )
 from continual.semantic_layout import (
     CUBE_FEATURE_DIM,
@@ -55,7 +55,7 @@ def make_vanilla_crl_networks(
     if width < 1 or depth < 1:
         raise ValueError("vanilla encoder width and depth must be positive")
 
-    sa_encoder = TaskStateActionEncoder(
+    sa_encoder = SetStateActionEncoder(
         max_cubes=layout.max_cubes,
         rep_size=rep_size,
         width=width,

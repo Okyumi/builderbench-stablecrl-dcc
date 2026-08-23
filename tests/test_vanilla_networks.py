@@ -62,6 +62,20 @@ class VanillaNetworkTest(unittest.TestCase):
             jnp.asarray(action),
         )
 
+    def test_set_control_is_independent_of_residual_dcc(self):
+        self.assertEqual(
+            type(self.networks.sa_encoder).__module__,
+            "continual.set_networks",
+        )
+        self.assertEqual(
+            type(self.networks.g_encoder).__module__,
+            "continual.set_networks",
+        )
+        self.assertEqual(
+            type(self.networks.actor).__module__,
+            "continual.set_networks",
+        )
+
     def test_monolithic_critic_is_permutation_invariant(self):
         observation, goal, action = self._inputs(False)
         perm_obs, perm_goal, perm_action = self._inputs(True)

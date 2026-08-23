@@ -129,6 +129,9 @@ halfway through a checkpoint sequence.
   no-dynamics DCC redesign, repeated boundary evaluation, and new Torch gate.
 - `docs/2026-08-23_dcc_smoke_hpc.md` records the dedicated residual-DCC smoke
   registry, short Torch launcher, acceptance criteria, and resume check.
+- `docs/2026-08-23_smoke_preflight_fixes.md` records the first Torch preflight
+  failures, the restored standalone vanilla set control, and launcher-test
+  environment isolation.
 
 ## NYU Torch HPC
 

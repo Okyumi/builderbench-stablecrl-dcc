@@ -106,6 +106,19 @@ class SmokeExperimentConfigsTest(unittest.TestCase):
                     "LOG_ROOT": str(root / "logs"),
                     "CHECKPOINT_ROOT": str(root / "checkpoints"),
                     "WANDB_DIR": str(root / "wandb"),
+                    "CONFIG_REGISTRY": "smoke_experiment_configs.py",
+                    "EXPERIMENT_STAGE": "smoke",
+                    "TASKS_PER_GPU": "1",
+                    "BASE_STEPS": "2097152",
+                    "STEPS_PER_TASK": "2097152",
+                    "NUM_ENVS": "256",
+                    "NUM_EVAL_ENVS": "32",
+                    "MAX_REPLAY_SIZE": "512",
+                    "MIN_REPLAY_SIZE": "128",
+                    "NUM_EVAL_STEPS": "4",
+                    "NUM_RESET_STEPS": "4",
+                    "WANDB_GROUP_PREFIX": "torch_dcc_smoke",
+                    "RUN_TEST_PREFLIGHT": "false",
                 }
             )
             if submit_dir is not None:

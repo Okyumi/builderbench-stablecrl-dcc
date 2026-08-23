@@ -186,6 +186,10 @@ class ExperimentConfigsTest(unittest.TestCase):
                     "LOG_ROOT": str(root / "logs"),
                     "CHECKPOINT_ROOT": str(root / "checkpoints"),
                     "WANDB_DIR": str(root / "wandb"),
+                    "CONFIG_REGISTRY": "experiment_configs.py",
+                    "EXPERIMENT_STAGE": "dcc_residual_gate",
+                    "WANDB_GROUP_PREFIX": "torch_dcc",
+                    "RUN_TEST_PREFLIGHT": "false",
                 }
             )
             completed = subprocess.run(
@@ -248,6 +252,10 @@ class ExperimentConfigsTest(unittest.TestCase):
                     "PYTHON_BIN": sys.executable,
                     "SCRATCH": str(Path(directory) / "scratch"),
                     "SLURM_SUBMIT_DIR": str(REPO_ROOT),
+                    "CONFIG_REGISTRY": "experiment_configs.py",
+                    "EXPERIMENT_STAGE": "dcc_residual_gate",
+                    "WANDB_GROUP_PREFIX": "torch_dcc",
+                    "RUN_TEST_PREFLIGHT": "false",
                 }
             )
             completed = subprocess.run(
