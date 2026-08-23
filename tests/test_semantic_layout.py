@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from continual.semantic_layout import RAW_CUBE_FEATURE_DIM, SemanticLayout
+from continual.grouped_layout import GroupedPadLayout
 from continual.task_manifest import (
     build_manifest,
     canonical_goal,
@@ -68,6 +69,27 @@ class SemanticLayoutTest(unittest.TestCase):
         raw = np.zeros(2 * RAW_CUBE_FEATURE_DIM + 2 * 4 + 1, np.float32)
         with self.assertRaisesRegex(ValueError, "delta_control"):
             self.layout.pack_observation(raw, 2)
+
+
+class GroupedPadLayoutTest(unittest.TestCase):
+    def test_round_trip_preserves_raw_groups_and_continuous_selector(self):
+        layout = GroupedPadLayout(max_cubes=4)
+        cubes = np.arange(
+            2 * RAW_CUBE_FEATURE_DIM, dtype=np.float32
+        ).reshape(2, RAW_CUBE_FEATURE_DIM)
+        raw = grouped_observation(cubes, select=0.137)
+        packed = layout.pack_observation(raw, 2)
+        self.assertEqual(packed.shape, (layout.observation_size,))
+        np.testing.assert_array_equal(
+            layout.unpack_observation(packed, 2), raw
+        )
+        np.testing.assert_array_equal(packed[-4:], [1, 1, 0, 0])
+
+    def test_goal_round_trip(self):
+        layout = GroupedPadLayout(max_cubes=4)
+        goal = np.arange(6, dtype=np.float32)
+        packed = layout.pack_goal(goal, 2)
+        np.testing.assert_array_equal(layout.unpack_goal(packed, 2), goal)
 
 
 class TaskIdentityTest(unittest.TestCase):

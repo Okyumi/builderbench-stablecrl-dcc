@@ -22,6 +22,11 @@ import tyro
 
 from continual.task_manifest import build_manifest, write_manifest
 from continual.dcc_networks import make_dcc_networks
+from continual.eval_logging import (
+    log_continual_eval_to_wandb,
+    read_eval_rows,
+    write_phase_rows,
+)
 from continual.semantic_layout import SemanticLayout
 from continual.semantic_wrapper import SemanticPadWrapper
 from builderbench.env_utils import make_env
@@ -48,6 +53,9 @@ class Args(StableCRLArgs):
     task_data_version: str = "david-6e8d56d"
     resume: bool = True
     critic_family: Literal["dcc"] = "dcc"
+    eval_next_task: bool = True
+    log_continual_eval: bool = True
+    wandb_eval_tables: bool = True
 
 
 def _goal_for_env_id(env_id: str) -> np.ndarray:
@@ -194,10 +202,14 @@ def _resume_prefix(
 
 
 def _evaluate_seen_tasks(args, records, carry, phase_index):
-    """Evaluate the current shared model with each stored task head."""
+    """Evaluate stored heads plus next-task zero-shot transfer."""
     results = []
     layout = SemanticLayout(max_cubes=args.max_cubes)
-    for eval_index, record in enumerate(records[:phase_index + 1]):
+    eval_indices = list(range(phase_index + 1))
+    if args.eval_next_task and phase_index + 1 < len(records):
+        eval_indices.append(phase_index + 1)
+    for eval_index in eval_indices:
+        record = records[eval_index]
         eval_args = replace(args, env_id=record.env_id)
         env_class, config = make_env(eval_args)
         config.impl = args.mjx_impl
@@ -227,7 +239,8 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
             goal_encoder_mode=args.dcc_goal_encoder_mode,
         )
         critic = dict(carry["critic_shared"])
-        critic["phi_task"] = carry["task_bank"][eval_index]["phi_task"]
+        head_index = min(eval_index, phase_index)
+        critic["phi_task"] = carry["task_bank"][head_index]["phi_task"]
         evaluator = Evaluator(
             env,
             functools.partial(make_inference_fn(dcc), deterministic=True),
@@ -244,6 +257,10 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
         results.append({
             "phase_index": phase_index,
             "eval_task_index": eval_index,
+            "eval_scope": (
+                "seen" if eval_index <= phase_index else "next_unseen"
+            ),
+            "critic_head_task_index": head_index,
             "train_task_global_id": records[phase_index].global_id,
             "eval_task_global_id": record.global_id,
             **{
@@ -286,6 +303,18 @@ def main(args: Args) -> None:
         )
     if start_task:
         print(f"Resuming continual run at task {start_task}/{len(records)}")
+    if start_task == len(records) and args.log_continual_eval:
+        completed_rows = read_eval_rows(
+            checkpoint_dir / "continual_eval.jsonl"
+        )
+        if completed_rows:
+            log_continual_eval_to_wandb(
+                args=args,
+                recipe=recipe,
+                rows=completed_rows,
+                phase_index=len(records) - 1,
+                log_tables=args.wandb_eval_tables,
+            )
 
     for task_index in range(start_task, len(records)):
         record = records[task_index]
@@ -306,9 +335,19 @@ def main(args: Args) -> None:
         eval_rows = _evaluate_seen_tasks(
             args, records, carry, phase_index=task_index
         )
-        with (checkpoint_dir / "continual_eval.jsonl").open("a") as stream:
-            for row in eval_rows:
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
+        all_eval_rows = write_phase_rows(
+            checkpoint_dir / "continual_eval.jsonl",
+            phase_index=task_index,
+            rows=eval_rows,
+        )
+        if args.log_continual_eval:
+            log_continual_eval_to_wandb(
+                args=args,
+                recipe=recipe,
+                rows=all_eval_rows,
+                phase_index=task_index,
+                log_tables=args.wandb_eval_tables,
+            )
         if not args.carry_actor:
             carry["actor"] = None
         _save_boundary_checkpoint(

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic BuilderBench StableCRL/DCC cells for NYU Torch.
 
-Array order is part of the protocol. Indices 0--23 are the baseline-first
-stage: upstream individual-task reproduction, wrapper controls, single-task
-DCC, and continual vanilla CRL reset/reset and persistent/persistent. Indices
-24--35 are the continual DCC/CRTR stage.
+Array order is part of the protocol. Indices 0--35 retain their original
+meaning. Indices 36--47 isolate padding, semantic transformation, and network
+architecture. Indices 48--53 test right-sized set capacity. Indices 54--65
+provide goal-only and expanding-capacity
+continual protocol cells, gated on the diagnostic results.
 """
 from __future__ import annotations
 
@@ -28,6 +29,13 @@ INDIVIDUAL_TASKS = (
     ("four_stack", "creative-4-task1"),
 )
 BASELINE_FIRST_END = 23
+STAGES = {
+    "replication": (0, 17),
+    "continual_baselines": (18, 35),
+    "padding_diagnostics": (36, 53),
+    "protocol": (54, 65),
+    "legacy_all": (0, 35),
+}
 _TASK_ID = re.compile(r"^creative-(\d+)-task(\d+)$")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 
@@ -61,6 +69,8 @@ def _cell(
         "dcc_task_depth": 4,
         "vanilla_width": 512,
         "vanilla_depth": 3,
+        "observation_layout": "semantic",
+        "vanilla_network_type": "set",
         "architecture": "block",
         "num_blocks": 8,
         "hidden_dim": 1024,
@@ -75,7 +85,7 @@ def _cell(
 
 
 def build_configs() -> list[dict[str, Any]]:
-    """Return the 36-run baseline-first batch in stable index order."""
+    """Return the 66-run staged batch in stable global index order."""
     configs: list[dict[str, Any]] = []
 
     # 0--5: upstream algorithm on two paper-style cells.
@@ -130,6 +140,7 @@ def build_configs() -> list[dict[str, Any]]:
         )
         for seed in SEEDS
     )
+
     configs.extend(
         _cell(
             "crl_persistent_persistent",
@@ -174,6 +185,110 @@ def build_configs() -> list[dict[str, Any]]:
         )
         for seed in SEEDS
     )
+
+    # 36--41: padding-only wrapper + the upstream residual architecture.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
+            _cell(
+                f"grouped_pad_upstream_{task_name}",
+                seed,
+                runner="continual_crl.py",
+                task_sequence=env_id,
+                actor_lifecycle="reset",
+                critic_lifecycle="reset",
+                observation_layout="grouped",
+                vanilla_network_type="flat_upstream",
+                max_cubes=4,
+                repetition_factor=12,
+            )
+            for seed in SEEDS
+        )
+
+    # 42--47: semantic slot layout + the same upstream residual architecture.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
+            _cell(
+                f"semantic_pad_upstream_{task_name}",
+                seed,
+                runner="continual_crl.py",
+                task_sequence=env_id,
+                actor_lifecycle="reset",
+                critic_lifecycle="reset",
+                observation_layout="semantic",
+                vanilla_network_type="flat_upstream",
+                max_cubes=4,
+                repetition_factor=12,
+            )
+            for seed in SEEDS
+        )
+
+    # 48--53: isolate oversized capacity in the original set-network control.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
+            _cell(
+                f"semantic_set_capacity4_{task_name}",
+                seed,
+                runner="continual_crl.py",
+                task_sequence=env_id,
+                actor_lifecycle="reset",
+                critic_lifecycle="reset",
+                observation_layout="semantic",
+                vanilla_network_type="set",
+                max_cubes=4,
+                repetition_factor=12,
+            )
+            for seed in SEEDS
+        )
+
+    # 54--65: protocol separation; run only after indices 36--53 pass.
+    configs.extend(
+        _cell(
+            "flat_crl_goal_only_1cube",
+            seed,
+            runner="continual_crl.py",
+            task_sequence="creative-1-task1,creative-1-task2",
+            observation_layout="semantic",
+            vanilla_network_type="flat_upstream",
+            max_cubes=1,
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "flat_crl_expanding_stack",
+            seed,
+            runner="continual_crl.py",
+            task_sequence=(
+                "creative-1-task1,creative-2-task1,"
+                "creative-3-task1,creative-4-task1"
+            ),
+            observation_layout="semantic",
+            vanilla_network_type="flat_upstream",
+            max_cubes=4,
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "dcc_goal_only_1cube",
+            seed,
+            task_sequence="creative-1-task1,creative-1-task2",
+            max_cubes=1,
+        )
+        for seed in SEEDS
+    )
+    configs.extend(
+        _cell(
+            "dcc_expanding_stack",
+            seed,
+            task_sequence=(
+                "creative-1-task1,creative-2-task1,"
+                "creative-3-task1,creative-4-task1"
+            ),
+            max_cubes=4,
+        )
+        for seed in SEEDS
+    )
     validate_configs(configs)
     return configs
 
@@ -193,6 +308,8 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
         "dcc_dyn_weight",
         "dcc_combine_mode",
         "dcc_goal_encoder_mode",
+        "observation_layout",
+        "vanilla_network_type",
         "repetition_factor",
         "max_cubes",
     }
@@ -220,6 +337,17 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
             raise ValueError(
                 "dcc_goal_encoder_mode must be shared or projected"
             )
+        if config["observation_layout"] not in {"semantic", "grouped"}:
+            raise ValueError("observation_layout must be semantic or grouped")
+        if config["vanilla_network_type"] not in {"set", "flat_upstream"}:
+            raise ValueError(
+                "vanilla_network_type must be set or flat_upstream"
+            )
+        if (
+            config["vanilla_network_type"] == "set"
+            and config["observation_layout"] != "semantic"
+        ):
+            raise ValueError("set networks require the semantic layout")
         if int(config["repetition_factor"]) < 1:
             raise ValueError("repetition_factor must be positive")
 
@@ -279,6 +407,10 @@ def main() -> None:
     actions.add_argument("--total", action="store_true")
     actions.add_argument("--list", action="store_true")
     actions.add_argument("--array-max", action="store_true")
+    actions.add_argument("--stage-start", choices=tuple(STAGES))
+    actions.add_argument("--stage-end", choices=tuple(STAGES))
+    actions.add_argument("--stage-total", choices=tuple(STAGES))
+    actions.add_argument("--stage-array-max", choices=tuple(STAGES))
     parser.add_argument("--tasks-per-gpu", type=int, default=1)
     args = parser.parse_args()
 
@@ -287,6 +419,20 @@ def main() -> None:
         parser.error("--tasks-per-gpu must be positive")
     if args.total:
         print(len(configs))
+        return
+    if args.stage_start is not None:
+        print(STAGES[args.stage_start][0])
+        return
+    if args.stage_end is not None:
+        print(STAGES[args.stage_end][1])
+        return
+    if args.stage_total is not None:
+        start, end = STAGES[args.stage_total]
+        print(end - start + 1)
+        return
+    if args.stage_array_max is not None:
+        start, end = STAGES[args.stage_array_max]
+        print(math.ceil((end - start + 1) / args.tasks_per_gpu) - 1)
         return
     if args.array_max:
         print(math.ceil(len(configs) / args.tasks_per_gpu) - 1)

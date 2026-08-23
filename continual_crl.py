@@ -19,6 +19,14 @@ import numpy as np
 import tyro
 
 from builderbench.env_utils import make_env
+from continual.eval_logging import (
+    log_continual_eval_to_wandb,
+    read_eval_rows,
+    write_phase_rows,
+)
+from continual.flat_upstream_networks import make_flat_upstream_networks
+from continual.grouped_layout import GroupedPadLayout
+from continual.grouped_wrapper import GroupedPadWrapper
 from continual.semantic_layout import SemanticLayout
 from continual.semantic_wrapper import SemanticPadWrapper
 from continual.task_manifest import build_manifest, write_manifest
@@ -50,6 +58,11 @@ class Args(StableCRLArgs):
     task_data_version: str = "david-6e8d56d"
     resume: bool = True
     critic_family: Literal["vanilla"] = "vanilla"
+    observation_layout: Literal["semantic", "grouped"] = "semantic"
+    vanilla_network_type: Literal["set", "flat_upstream"] = "set"
+    eval_next_task: bool = True
+    log_continual_eval: bool = True
+    wandb_eval_tables: bool = True
 
 
 def _checkpoint_recipe(args: Args) -> dict:
@@ -88,10 +101,35 @@ def _checkpoint_recipe(args: Args) -> dict:
         "vanilla_width",
         "vanilla_depth",
     )
-    return {
+    recipe = {
         "algorithm": "stablecrl-vanilla-semantic-set-v1",
         **{name: getattr(args, name) for name in names},
     }
+    # Preserve the exact legacy recipe for already-running indices 6--23.
+    if (
+        args.observation_layout != "semantic"
+        or args.vanilla_network_type != "set"
+    ):
+        recipe.update({
+            "algorithm": (
+                "stablecrl-vanilla-fixed-layout-flat-upstream-v2"
+            ),
+            "observation_layout": args.observation_layout,
+            "vanilla_network_type": args.vanilla_network_type,
+            "architecture": args.architecture,
+            "num_blocks": args.num_blocks,
+            "hidden_dim": args.hidden_dim,
+            "scale_actor_residual_by_depth": (
+                args.scale_actor_residual_by_depth
+            ),
+            "scale_critic_residual_by_depth": (
+                args.scale_critic_residual_by_depth
+            ),
+            "use_non_residual_critic_encoders": (
+                args.use_non_residual_critic_encoders
+            ),
+        })
+    return recipe
 
 
 def _transfer_carry(args: Args, carry: dict | None) -> dict | None:
@@ -111,14 +149,29 @@ def _transfer_carry(args: Args, carry: dict | None) -> dict | None:
 
 
 def _evaluate_seen_tasks(args, records, carry, phase_index):
-    """Evaluate the current monolithic actor/critic on every seen task."""
+    """Evaluate seen tasks and an optional next-task zero-shot control."""
     results = []
-    layout = SemanticLayout(max_cubes=args.max_cubes)
-    for eval_index, record in enumerate(records[:phase_index + 1]):
+    if args.vanilla_network_type == "set" and args.observation_layout != "semantic":
+        raise ValueError("set networks require the semantic observation layout")
+    layout = (
+        SemanticLayout(max_cubes=args.max_cubes)
+        if args.observation_layout == "semantic"
+        else GroupedPadLayout(max_cubes=args.max_cubes)
+    )
+    wrapper_type = (
+        SemanticPadWrapper
+        if args.observation_layout == "semantic"
+        else GroupedPadWrapper
+    )
+    eval_indices = list(range(phase_index + 1))
+    if args.eval_next_task and phase_index + 1 < len(records):
+        eval_indices.append(phase_index + 1)
+    for eval_index in eval_indices:
+        record = records[eval_index]
         eval_args = replace(args, env_id=record.env_id)
         env_class, config = make_env(eval_args)
         config.impl = args.mjx_impl
-        raw_env = SemanticPadWrapper(
+        raw_env = wrapper_type(
             env_class(config=config),
             num_cubes=config.num_cubes,
             max_cubes=args.max_cubes,
@@ -132,13 +185,33 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
             episode_length = config.episode_length
             env = wrap_env(raw_env, episode_length)
 
-        networks = make_vanilla_crl_networks(
-            layout=layout,
-            action_size=env.action_size,
-            rep_size=args.rep_size,
-            width=args.vanilla_width,
-            depth=args.vanilla_depth,
-        )
+        if args.vanilla_network_type == "set":
+            networks = make_vanilla_crl_networks(
+                layout=layout,
+                action_size=env.action_size,
+                rep_size=args.rep_size,
+                width=args.vanilla_width,
+                depth=args.vanilla_depth,
+            )
+        else:
+            networks = make_flat_upstream_networks(
+                observation_size=layout.observation_size,
+                goal_size=layout.goal_size,
+                action_size=env.action_size,
+                rep_size=args.rep_size,
+                architecture=args.architecture,
+                num_blocks=args.num_blocks,
+                hidden_dim=args.hidden_dim,
+                scale_actor_residual_by_depth=(
+                    args.scale_actor_residual_by_depth
+                ),
+                scale_critic_residual_by_depth=(
+                    args.scale_critic_residual_by_depth
+                ),
+                use_non_residual_critic_encoders=(
+                    args.use_non_residual_critic_encoders
+                ),
+            )
         evaluator = Evaluator(
             env,
             functools.partial(make_inference_fn(networks), deterministic=True),
@@ -158,6 +231,10 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
         results.append({
             "phase_index": phase_index,
             "eval_task_index": eval_index,
+            "eval_scope": (
+                "seen" if eval_index <= phase_index else "next_unseen"
+            ),
+            "critic_head_task_index": None,
             "train_task_global_id": records[phase_index].global_id,
             "eval_task_global_id": record.global_id,
             **{
@@ -201,6 +278,18 @@ def main(args: Args) -> None:
         )
     if start_task:
         print(f"Resuming continual CRL at task {start_task}/{len(records)}")
+    if start_task == len(records) and args.log_continual_eval:
+        completed_rows = read_eval_rows(
+            checkpoint_dir / "continual_eval.jsonl"
+        )
+        if completed_rows:
+            log_continual_eval_to_wandb(
+                args=args,
+                recipe=recipe,
+                rows=completed_rows,
+                phase_index=len(records) - 1,
+                log_tables=args.wandb_eval_tables,
+            )
 
     for task_index in range(start_task, len(records)):
         record = records[task_index]
@@ -230,9 +319,19 @@ def main(args: Args) -> None:
         eval_rows = _evaluate_seen_tasks(
             args, records, carry, phase_index=task_index
         )
-        with (checkpoint_dir / "continual_eval.jsonl").open("a") as stream:
-            for row in eval_rows:
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
+        all_eval_rows = write_phase_rows(
+            checkpoint_dir / "continual_eval.jsonl",
+            phase_index=task_index,
+            rows=eval_rows,
+        )
+        if args.log_continual_eval:
+            log_continual_eval_to_wandb(
+                args=args,
+                recipe=recipe,
+                rows=all_eval_rows,
+                phase_index=task_index,
+                log_tables=args.wandb_eval_tables,
+            )
         _save_boundary_checkpoint(
             _checkpoint_path(checkpoint_dir, task_index),
             carry=carry,

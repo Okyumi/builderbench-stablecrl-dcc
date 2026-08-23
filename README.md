@@ -80,8 +80,9 @@ Changing an algorithmic setting requires a fresh boundary-checkpoint
 directory. Resume checkpoints store and validate the full training recipe.
 
 The continual driver writes an immutable task manifest, atomic task-boundary
-checkpoints, and a lower-triangular evaluation matrix in
-`checkpoints/continual_dcc/continual_eval.jsonl`.
+checkpoints, seen-task and next-task evaluation rows in
+`checkpoints/continual_dcc/continual_eval.jsonl`, and lightweight success
+matrices to a dedicated resumable W&B evaluation run.
 
 ### Why this is more than padding
 
@@ -96,7 +97,7 @@ Task identities use a versioned hash of canonical goal geometry. The hash is
 invariant to cube permutation and horizontal translation while preserving
 height above the ground plane, so `pick` and `place` remain distinct skills.
 The default capacity is eight cubes (`--max-cubes 8`). Set it to the largest
-known task before training. For open-ended curricula, use 4/8/16 capacity
+known task before training. For open-ended curricula, use 4/8/12 capacity
 buckets and reuse the shared set-encoder parameters across separately compiled
 shapes rather than assigning permanent semantics to padded indices.
 
@@ -113,24 +114,31 @@ shapes rather than assigning permanent semantics to padded indices.
 - `docs/2026-08-22_continual_crl_baselines_and_controls.md` documents the
   encoder design, vanilla reset/reset and persistent/persistent lifecycles,
   individual-task controls, and the baseline-first run order.
+- `docs/2026-08-23_builderbench_environment_contracts.md` records every
+  routed environment's observation/action/goal dimensions, horizons, rewards,
+  and success definitions.
+- `docs/2026-08-23_continual_and_meta_protocol.md` defines the diagnostic,
+  continual, capacity-bucket, and future meta-learning protocols.
+- `docs/2026-08-23_continual_eval_and_padding_controls.md` records the matrix
+  logger, padding-only/upstream controls, staged configs, and validation.
 
 ## NYU Torch HPC
 
-The active batch contains 36 runs. Indices 0--23 are the baseline-first stage:
-upstream individual-task reproductions, wrapper-only vanilla controls,
-single-task DCC controls, and vanilla continual reset/reset and
-persistent/persistent. Indices 24--35 contain the continual DCC and CRTR
-cells. Every group uses matched seeds 5/6/7.
+The global registry contains 66 stable indices. Existing 0--35 retain their
+original meanings. Padding diagnostics are 36--53, and the gated goal-only /
+expanding-stack protocol cells are 54--65. Every group uses seeds 5/6/7.
+`DRAFT.sh` defaults to the padding-diagnostic stage, so Slurm array slots are
+stage-relative and do not rerun 0--35.
 
 ```bash
 python experiment_configs.py --list
-DRY_RUN=true CONFIG_INDEX=0 bash DRAFT.sh
+DRY_RUN=true CONFIG_INDEX=36 bash DRAFT.sh
 my_slurm_accounts
-sbatch --account=torch_pr_XXX_XXXXX --array=0-17 DRAFT.sh
-# After validating the matched individual-task controls:
-sbatch --account=torch_pr_XXX_XXXXX --array=18-23 DRAFT.sh
-# Then run the continual DCC stage:
-sbatch --account=torch_pr_XXX_XXXXX --array=24-35 DRAFT.sh
+EXPERIMENT_STAGE=padding_diagnostics \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-17 DRAFT.sh
+# Only after the diagnostic gate passes:
+EXPERIMENT_STAGE=protocol \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-11 DRAFT.sh
 ```
 
 Torch requires the allocation account and does not require a manually chosen

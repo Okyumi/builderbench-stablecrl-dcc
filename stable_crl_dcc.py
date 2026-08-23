@@ -45,6 +45,9 @@ from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
 from continual.dcc_networks import make_dcc_networks, masked_dynamics_mse
+from continual.flat_upstream_networks import make_flat_upstream_networks
+from continual.grouped_layout import GroupedPadLayout
+from continual.grouped_wrapper import GroupedPadWrapper
 from continual.vanilla_networks import make_vanilla_crl_networks
 from continual.semantic_layout import SemanticLayout
 from continual.semantic_wrapper import SemanticPadWrapper
@@ -224,6 +227,8 @@ class Args:
 
     # semantic-wrapper control: ordinary CRL without DCC decomposition
     critic_family: Literal["dcc", "vanilla"] = "dcc"
+    observation_layout: Literal["semantic", "grouped"] = "semantic"
+    vanilla_network_type: Literal["set", "flat_upstream"] = "set"
     vanilla_width: int = 512
     vanilla_depth: int = 3
     vanilla_carry_critic: bool = True
@@ -471,13 +476,32 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
     # Initialize environment
     env_class, default_config = make_env(args)
     default_config.impl = args.mjx_impl
-    layout = SemanticLayout(max_cubes=args.max_cubes)
-    semantic_env = SemanticPadWrapper(
+    if args.critic_family == "dcc" and args.observation_layout != "semantic":
+        raise ValueError("DCC requires observation_layout='semantic'")
+    if (
+        args.critic_family == "vanilla"
+        and args.vanilla_network_type == "set"
+        and args.observation_layout != "semantic"
+    ):
+        raise ValueError(
+            "vanilla_network_type='set' requires observation_layout='semantic'"
+        )
+    layout = (
+        SemanticLayout(max_cubes=args.max_cubes)
+        if args.observation_layout == "semantic"
+        else GroupedPadLayout(max_cubes=args.max_cubes)
+    )
+    wrapper_type = (
+        SemanticPadWrapper
+        if args.observation_layout == "semantic"
+        else GroupedPadWrapper
+    )
+    semantic_env = wrapper_type(
         env_class(config=default_config),
         num_cubes=default_config.num_cubes,
         max_cubes=args.max_cubes,
     )
-    semantic_eval_env = SemanticPadWrapper(
+    semantic_eval_env = wrapper_type(
         env_class(config=default_config),
         num_cubes=default_config.num_cubes,
         max_cubes=args.max_cubes,
@@ -531,17 +555,45 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             goal_encoder_mode=args.dcc_goal_encoder_mode,
         )
     elif args.critic_family == "vanilla":
-        networks = make_vanilla_crl_networks(
-            layout=layout,
-            action_size=action_size,
-            rep_size=args.rep_size,
-            width=args.vanilla_width,
-            depth=args.vanilla_depth,
-        )
+        if args.vanilla_network_type == "set":
+            networks = make_vanilla_crl_networks(
+                layout=layout,
+                action_size=action_size,
+                rep_size=args.rep_size,
+                width=args.vanilla_width,
+                depth=args.vanilla_depth,
+            )
+        else:
+            networks = make_flat_upstream_networks(
+                observation_size=layout.observation_size,
+                goal_size=layout.goal_size,
+                action_size=action_size,
+                rep_size=args.rep_size,
+                architecture=args.architecture,
+                num_blocks=args.num_blocks,
+                hidden_dim=args.hidden_dim,
+                scale_actor_residual_by_depth=(
+                    args.scale_actor_residual_by_depth
+                ),
+                scale_critic_residual_by_depth=(
+                    args.scale_critic_residual_by_depth
+                ),
+                use_non_residual_critic_encoders=(
+                    args.use_non_residual_critic_encoders
+                ),
+            )
     else:
         raise ValueError(f"unknown critic_family={args.critic_family!r}")
 
-    initialized = networks.init_params(key_sa)
+    initialization_key = (
+        (key_actor, key_sa, key_g)
+        if (
+            args.critic_family == "vanilla"
+            and args.vanilla_network_type == "flat_upstream"
+        )
+        else key_sa
+    )
+    initialized = networks.init_params(initialization_key)
     actor_state = TrainState.create(
         apply_fn=networks.actor.apply,
         params=initialized.pop("actor"),
@@ -595,9 +647,18 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             f"dyn_weight={dyn_weight}"
         )
     else:
-        architecture_description = (
-            f"width={args.vanilla_width}, depth={args.vanilla_depth}, "
-            "no task head, no dynamics head"
+        if args.vanilla_network_type == "set":
+            architecture_description = (
+                f"semantic set width={args.vanilla_width}, "
+                f"depth={args.vanilla_depth}"
+            )
+        else:
+            architecture_description = (
+                f"flat upstream {args.architecture}, "
+                f"blocks={args.num_blocks}, hidden_dim={args.hidden_dim}"
+            )
+        architecture_description += (
+            f", layout={args.observation_layout}, no task/dynamics head"
         )
     print(
         f"\n{args.critic_family.upper()} parameters: "
@@ -1089,13 +1150,14 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                 import matplotlib
                 matplotlib.use("Agg")
                 import matplotlib.pyplot as plt
-
                 steps, success_rates, rewards = [], [], []
                 with open(log_path) as f:
                     for line in f:
                         entry = json.loads(line)
                         steps.append(entry.get("eval_step"))
-                        success_rates.append(entry.get("eval/episode_success_rate"))
+                        success_rates.append(
+                            entry.get("eval/episode_success_rate")
+                        )
                         rewards.append(entry.get("eval/episode_reward"))
 
                 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -1104,7 +1166,9 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                 axes[0].set_ylabel("eval/episode_success_rate")
                 axes[0].set_title("Episode success rate")
                 axes[0].grid(True, alpha=0.3)
-                axes[1].plot(steps, rewards, marker="o", color="tab:orange")
+                axes[1].plot(
+                    steps, rewards, marker="o", color="tab:orange"
+                )
                 axes[1].set_xlabel("Eval step")
                 axes[1].set_ylabel("eval/episode_reward")
                 axes[1].set_title("Episode reward")
@@ -1115,8 +1179,11 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                 fig.savefig(plot_path, dpi=120)
                 plt.close(fig)
                 print(f"Saved metrics plot to {plot_path}")
-            except Exception as e:
-                print(f"metrics plot skipped: {e}")
+            except Exception as error:
+                print(
+                    "metrics plot skipped; checkpoints and eval_log.jsonl "
+                    f"are valid: {error}"
+                )
 
     if args.track:
         wandb.finish()

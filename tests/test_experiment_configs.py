@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class ExperimentConfigsTest(unittest.TestCase):
     def test_batch_is_baseline_first_and_retains_sgcrl_cells(self):
         configs = experiment_configs.build_configs()
-        self.assertEqual(len(configs), 36)
+        self.assertEqual(len(configs), 66)
         self.assertEqual({config["seed"] for config in configs}, {5, 6, 7})
         self.assertEqual(
             Counter(config["name"] for config in configs),
@@ -33,6 +33,16 @@ class ExperimentConfigsTest(unittest.TestCase):
                 "dcc_persistent_actor_no_dynamics": 3,
                 "dcc_crtr12_three_stack": 3,
                 "dcc_crtr12_four_stack": 3,
+                "grouped_pad_upstream_three_stack": 3,
+                "grouped_pad_upstream_four_stack": 3,
+                "semantic_pad_upstream_three_stack": 3,
+                "semantic_pad_upstream_four_stack": 3,
+                "semantic_set_capacity4_three_stack": 3,
+                "semantic_set_capacity4_four_stack": 3,
+                "flat_crl_goal_only_1cube": 3,
+                "flat_crl_expanding_stack": 3,
+                "dcc_goal_only_1cube": 3,
+                "dcc_expanding_stack": 3,
             },
         )
 
@@ -76,7 +86,7 @@ class ExperimentConfigsTest(unittest.TestCase):
 
         dynamics = configs[24:27]
         no_dynamics = configs[27:30]
-        crtr = configs[30:]
+        crtr = configs[30:36]
         self.assertTrue(all(config["carry_actor"] for config in dynamics))
         self.assertTrue(
             all(config["dcc_dyn_weight"] == 1.0 for config in dynamics)
@@ -94,9 +104,21 @@ class ExperimentConfigsTest(unittest.TestCase):
             all(len(config["task_sequence"].split(",")) == 1 for config in crtr)
         )
         names = {config["name"] for config in configs}
-        self.assertEqual(len(names), 12)
+        self.assertEqual(len(names), 22)
         self.assertTrue(
             all(config["wandb_group"] == config["name"] for config in configs)
+        )
+        self.assertTrue(
+            all(
+                config["vanilla_network_type"] == "flat_upstream"
+                for config in configs[36:48]
+            )
+        )
+        self.assertTrue(
+            all(
+                config["observation_layout"] == "grouped"
+                for config in configs[36:42]
+            )
         )
 
     def test_cli_counts_and_array_sizes(self):
@@ -107,10 +129,20 @@ class ExperimentConfigsTest(unittest.TestCase):
                 text=True,
             ).strip()
 
-        self.assertEqual(output("--total"), "36")
-        self.assertEqual(output("--array-max"), "35")
+        self.assertEqual(output("--total"), "66")
+        self.assertEqual(output("--array-max"), "65")
         self.assertEqual(
-            output("--array-max", "--tasks-per-gpu", "2"), "17"
+            output("--array-max", "--tasks-per-gpu", "2"), "32"
+        )
+        self.assertEqual(
+            output("--stage-start", "padding_diagnostics"), "36"
+        )
+        self.assertEqual(
+            output(
+                "--stage-array-max", "padding_diagnostics",
+                "--tasks-per-gpu", "2",
+            ),
+            "8",
         )
         setting = output("--setting", "0")
         self.assertIn("NAME=upstream_scaled_crtr_three_stack", setting)
@@ -167,6 +199,12 @@ class ExperimentConfigsTest(unittest.TestCase):
         self.assertIn("continual_dcc.py", dcc)
         self.assertIn("--dcc-dyn-weight 1.0", dcc)
         self.assertIn("--carry-actor", dcc)
+
+        padded = self._draft_output(36)
+        self.assertIn("--observation-layout grouped", padded)
+        self.assertIn("--vanilla-network-type flat_upstream", padded)
+        self.assertIn("--eval-next-task", padded)
+        self.assertIn("--log-continual-eval", padded)
 
     def test_draft_finds_repo_when_slurm_copies_the_script(self):
         with tempfile.TemporaryDirectory() as directory:

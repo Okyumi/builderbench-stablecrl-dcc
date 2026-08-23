@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --array=0-35
+#SBATCH --array=0-17
 #SBATCH --chdir=/scratch/yd2247/builderbench-stablecrl-dcc
 #SBATCH --output=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.out
 #SBATCH --error=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.err
@@ -29,6 +29,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 TASKS_PER_GPU="${TASKS_PER_GPU:-1}"
 DRY_RUN="${DRY_RUN:-false}"
 REQUIRE_GPU="${REQUIRE_GPU:-true}"
+EXPERIMENT_STAGE="${EXPERIMENT_STAGE:-padding_diagnostics}"
 
 SCRATCH_ROOT="${SCRATCH:-/scratch/${USER}}"
 DEFAULT_REPO_DIR="${SCRATCH_ROOT}/builderbench-stablecrl-dcc"
@@ -95,6 +96,9 @@ SAVE_CHECKPOINT="${SAVE_CHECKPOINT:-true}"
 RECORD_VIDEOS="${RECORD_VIDEOS:-false}"
 VISUALIZE_SAMPLES="${VISUALIZE_SAMPLES:-false}"
 RESUME="${RESUME:-true}"
+EVAL_NEXT_TASK="${EVAL_NEXT_TASK:-true}"
+LOG_CONTINUAL_EVAL="${LOG_CONTINUAL_EVAL:-true}"
+WANDB_EVAL_TABLES="${WANDB_EVAL_TABLES:-true}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-builderbench-stablecrl-dcc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 WANDB_MODE="${WANDB_MODE:-online}"
@@ -179,14 +183,22 @@ mkdir -p "$LOG_ROOT" "$CHECKPOINT_ROOT" "$WANDB_DIR" \
 setup_environment
 
 TOTAL_CONFIGS="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" --total)"
-ARRAY_MAX="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" --array-max \
+STAGE_START="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+  --stage-start "$EXPERIMENT_STAGE")"
+STAGE_END="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+  --stage-end "$EXPERIMENT_STAGE")"
+STAGE_CONFIGS="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+  --stage-total "$EXPERIMENT_STAGE")"
+ARRAY_MAX="$($PYTHON_BIN "$REPO_DIR/experiment_configs.py" \
+  --stage-array-max \
+  "$EXPERIMENT_STAGE" \
   --tasks-per-gpu "$TASKS_PER_GPU")"
 ARRAY_TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 if [ -n "${CONFIG_INDEX:-}" ]; then
   FIRST_CONFIG="$CONFIG_INDEX"
   SLOTS=1
 else
-  FIRST_CONFIG=$((TASKS_PER_GPU * ARRAY_TASK_ID))
+  FIRST_CONFIG=$((STAGE_START + TASKS_PER_GPU * ARRAY_TASK_ID))
   SLOTS="$TASKS_PER_GPU"
 fi
 
@@ -200,7 +212,9 @@ echo "============================================================"
 echo "BuilderBench StableCRL/DCC on NYU Torch"
 echo "job=${SLURM_ARRAY_JOB_ID:-local} array_task=${ARRAY_TASK_ID}"
 echo "account=${SLURM_JOB_ACCOUNT:-dry-run-or-unspecified}"
-echo "configs=${TOTAL_CONFIGS} array_max=${ARRAY_MAX} tasks_per_gpu=${TASKS_PER_GPU}"
+echo "configs=${TOTAL_CONFIGS} stage=${EXPERIMENT_STAGE} " \
+  "stage_range=${STAGE_START}-${STAGE_END} stage_configs=${STAGE_CONFIGS}"
+echo "array_max=${ARRAY_MAX} tasks_per_gpu=${TASKS_PER_GPU}"
 echo "repo=${REPO_DIR}"
 echo "checkpoint_root=${CHECKPOINT_ROOT}"
 echo "JAX memory fraction=${XLA_PYTHON_CLIENT_MEM_FRACTION}"
@@ -218,6 +232,10 @@ trap terminate_children INT TERM
 
 for ((slot = 0; slot < SLOTS; slot++)); do
   CONFIG_IDX=$((FIRST_CONFIG + slot))
+  if [ -z "${CONFIG_INDEX:-}" ] && [ "$CONFIG_IDX" -gt "$STAGE_END" ]; then
+    echo "[slot $slot] config $CONFIG_IDX is beyond stage end; skipping"
+    continue
+  fi
   if [ "$CONFIG_IDX" -ge "$TOTAL_CONFIGS" ]; then
     echo "[slot $slot] config $CONFIG_IDX is beyond $TOTAL_CONFIGS; skipping"
     continue
@@ -281,6 +299,9 @@ for ((slot = 0; slot < SLOTS; slot++)); do
       --mjx-impl "$MJX_IMPL"
     )
     COMMAND+=("$(bool_flag resume "$RESUME")")
+    COMMAND+=("$(bool_flag eval-next-task "$EVAL_NEXT_TASK")")
+    COMMAND+=("$(bool_flag log-continual-eval "$LOG_CONTINUAL_EVAL")")
+    COMMAND+=("$(bool_flag wandb-eval-tables "$WANDB_EVAL_TABLES")")
   fi
 
   if [ "$RUNNER" = "continual_crl.py" ]; then
@@ -289,6 +310,11 @@ for ((slot = 0; slot < SLOTS; slot++)); do
       --critic-lifecycle "$CRITIC_LIFECYCLE"
       --vanilla-width "$VANILLA_WIDTH"
       --vanilla-depth "$VANILLA_DEPTH"
+      --observation-layout "$OBSERVATION_LAYOUT"
+      --vanilla-network-type "$VANILLA_NETWORK_TYPE"
+      --architecture "$ARCHITECTURE"
+      --num-blocks "$NUM_BLOCKS"
+      --hidden-dim "$HIDDEN_DIM"
     )
   elif [ "$RUNNER" = "continual_dcc.py" ]; then
     COMMAND+=(
