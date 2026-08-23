@@ -1085,35 +1085,38 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
     if args.save_checkpoint:
         log_path = f"{save_path}/eval_log.jsonl"
         if os.path.exists(log_path):
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
 
-            steps, success_rates, rewards = [], [], []
-            with open(log_path) as f:
-                for line in f:
-                    entry = json.loads(line)
-                    steps.append(entry.get("eval_step"))
-                    success_rates.append(entry.get("eval/episode_success_rate"))
-                    rewards.append(entry.get("eval/episode_reward"))
+                steps, success_rates, rewards = [], [], []
+                with open(log_path) as f:
+                    for line in f:
+                        entry = json.loads(line)
+                        steps.append(entry.get("eval_step"))
+                        success_rates.append(entry.get("eval/episode_success_rate"))
+                        rewards.append(entry.get("eval/episode_reward"))
 
-            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-            axes[0].plot(steps, success_rates, marker="o")
-            axes[0].set_xlabel("Eval step")
-            axes[0].set_ylabel("eval/episode_success_rate")
-            axes[0].set_title("Episode success rate")
-            axes[0].grid(True, alpha=0.3)
-            axes[1].plot(steps, rewards, marker="o", color="tab:orange")
-            axes[1].set_xlabel("Eval step")
-            axes[1].set_ylabel("eval/episode_reward")
-            axes[1].set_title("Episode reward")
-            axes[1].grid(True, alpha=0.3)
-            fig.suptitle(args.exp_name)
-            fig.tight_layout()
-            plot_path = f"{save_path}/metrics.png"
-            fig.savefig(plot_path, dpi=120)
-            plt.close(fig)
-            print(f"Saved metrics plot to {plot_path}")
+                fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+                axes[0].plot(steps, success_rates, marker="o")
+                axes[0].set_xlabel("Eval step")
+                axes[0].set_ylabel("eval/episode_success_rate")
+                axes[0].set_title("Episode success rate")
+                axes[0].grid(True, alpha=0.3)
+                axes[1].plot(steps, rewards, marker="o", color="tab:orange")
+                axes[1].set_xlabel("Eval step")
+                axes[1].set_ylabel("eval/episode_reward")
+                axes[1].set_title("Episode reward")
+                axes[1].grid(True, alpha=0.3)
+                fig.suptitle(args.exp_name)
+                fig.tight_layout()
+                plot_path = f"{save_path}/metrics.png"
+                fig.savefig(plot_path, dpi=120)
+                plt.close(fig)
+                print(f"Saved metrics plot to {plot_path}")
+            except Exception as e:
+                print(f"metrics plot skipped: {e}")
 
     if args.track:
         wandb.finish()
