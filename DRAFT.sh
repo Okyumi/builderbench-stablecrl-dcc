@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --array=0-17
+#SBATCH --array=0-5
 #SBATCH --chdir=/scratch/yd2247/builderbench-stablecrl-dcc
 #SBATCH --output=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.out
 #SBATCH --error=/scratch/yd2247/builderbench-stablecrl-dcc/logs/slurm/%A_%a.err
@@ -29,7 +29,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 TASKS_PER_GPU="${TASKS_PER_GPU:-1}"
 DRY_RUN="${DRY_RUN:-false}"
 REQUIRE_GPU="${REQUIRE_GPU:-true}"
-EXPERIMENT_STAGE="${EXPERIMENT_STAGE:-padding_diagnostics}"
+EXPERIMENT_STAGE="${EXPERIMENT_STAGE:-dcc_residual_gate}"
 
 SCRATCH_ROOT="${SCRATCH:-/scratch/${USER}}"
 DEFAULT_REPO_DIR="${SCRATCH_ROOT}/builderbench-stablecrl-dcc"
@@ -297,6 +297,7 @@ for ((slot = 0; slot < SLOTS; slot++)); do
       --boundary-checkpoint-dir "$RUN_CHECKPOINT_DIR"
       --task-data-version "$TASK_DATA_VERSION"
       --mjx-impl "$MJX_IMPL"
+      --continual-eval-repeats "$CONTINUAL_EVAL_REPEATS"
     )
     COMMAND+=("$(bool_flag resume "$RESUME")")
     COMMAND+=("$(bool_flag eval-next-task "$EVAL_NEXT_TASK")")
@@ -318,16 +319,14 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     )
   elif [ "$RUNNER" = "continual_dcc.py" ]; then
     COMMAND+=(
-      --dcc-dyn-weight "$DCC_DYN_WEIGHT"
-      --dcc-shared-width "$DCC_SHARED_WIDTH"
-      --dcc-shared-depth "$DCC_SHARED_DEPTH"
       --dcc-task-width "$DCC_TASK_WIDTH"
       --dcc-task-depth "$DCC_TASK_DEPTH"
       --dcc-combine-mode "$DCC_COMBINE_MODE"
       --dcc-goal-encoder-mode "$DCC_GOAL_ENCODER_MODE"
+      --architecture "$ARCHITECTURE"
+      --num-blocks "$NUM_BLOCKS"
+      --hidden-dim "$HIDDEN_DIM"
     )
-    [ -n "$DCC_DYN_WEIGHT_AFTER_TASK0" ] \
-      && COMMAND+=(--dcc-dyn-weight-after-task0 "$DCC_DYN_WEIGHT_AFTER_TASK0")
     COMMAND+=("$(bool_flag carry-actor "$CARRY_ACTOR")")
     COMMAND+=("$(bool_flag dcc-carry-shared "$DCC_CARRY_SHARED")")
   fi

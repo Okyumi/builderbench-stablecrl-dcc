@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic BuilderBench StableCRL/DCC cells for NYU Torch.
 
-Array order is part of the protocol. Indices 0--35 retain their original
-meaning. Indices 36--47 isolate padding, semantic transformation, and network
-architecture. Indices 48--53 test right-sized set capacity. Indices 54--65
-provide goal-only and expanding-capacity
-continual protocol cells, gated on the diagnostic results.
+Indices 36--53 record the completed padding diagnostics. Indices 54--59 gate
+the residual no-dynamics DCC implementation on individual tasks. Indices
+60--71 provide separately launchable flat-CRL and DCC continual protocols.
 """
 from __future__ import annotations
 
@@ -33,7 +31,10 @@ STAGES = {
     "replication": (0, 17),
     "continual_baselines": (18, 35),
     "padding_diagnostics": (36, 53),
-    "protocol": (54, 65),
+    "dcc_residual_gate": (54, 59),
+    "protocol_baselines": (60, 65),
+    "protocol_dcc": (66, 71),
+    "protocol": (60, 71),
     "legacy_all": (0, 35),
 }
 _TASK_ID = re.compile(r"^creative-(\d+)-task(\d+)$")
@@ -59,12 +60,8 @@ def _cell(
         "critic_lifecycle": "persistent",
         "carry_actor": True,
         "dcc_carry_shared": True,
-        "dcc_dyn_weight": 1.0,
-        "dcc_dyn_weight_after_task0": None,
         "dcc_combine_mode": "add",
         "dcc_goal_encoder_mode": "shared",
-        "dcc_shared_width": 512,
-        "dcc_shared_depth": 3,
         "dcc_task_width": 256,
         "dcc_task_depth": 4,
         "vanilla_width": 512,
@@ -78,6 +75,7 @@ def _cell(
         "max_cubes": 8,
         "use_pd": True,
         "pd_duration": 5,
+        "continual_eval_repeats": 5,
         "wandb_group": name,
     }
     config.update(overrides)
@@ -85,7 +83,7 @@ def _cell(
 
 
 def build_configs() -> list[dict[str, Any]]:
-    """Return the 66-run staged batch in stable global index order."""
+    """Return the 72-run staged batch in stable global index order."""
     configs: list[dict[str, Any]] = []
 
     # 0--5: upstream algorithm on two paper-style cells.
@@ -152,16 +150,17 @@ def build_configs() -> list[dict[str, Any]]:
         for seed in SEEDS
     )
 
-    # 24--35: existing SGCRL-style continual DCC and CRTR controls.
+    # 24--35: SGCRL-style no-dynamics DCC and CRTR controls.
     configs.extend(
-        _cell("dcc_persistent_actor_dynamics", seed)
+        _cell("dcc_add_shared_no_dynamics", seed)
         for seed in SEEDS
     )
     configs.extend(
         _cell(
-            "dcc_persistent_actor_no_dynamics",
+            "dcc_concat_projected_no_dynamics",
             seed,
-            dcc_dyn_weight=0.0,
+            dcc_combine_mode="concat",
+            dcc_goal_encoder_mode="projected",
         )
         for seed in SEEDS
     )
@@ -240,7 +239,21 @@ def build_configs() -> list[dict[str, Any]]:
             for seed in SEEDS
         )
 
-    # 54--65: protocol separation; run only after indices 36--53 pass.
+    # 54--59: redesigned residual DCC must pass individual-task parity first.
+    for task_name, env_id in INDIVIDUAL_TASKS:
+        configs.extend(
+            _cell(
+                f"dcc_residual_no_dyn_{task_name}",
+                seed,
+                task_sequence=env_id,
+                carry_actor=False,
+                max_cubes=4,
+                repetition_factor=12,
+            )
+            for seed in SEEDS
+        )
+
+    # 60--71: protocol separation after the DCC parity gate passes.
     configs.extend(
         _cell(
             "flat_crl_goal_only_1cube",
@@ -270,7 +283,7 @@ def build_configs() -> list[dict[str, Any]]:
     )
     configs.extend(
         _cell(
-            "dcc_goal_only_1cube",
+            "dcc_residual_goal_only_1cube",
             seed,
             task_sequence="creative-1-task1,creative-1-task2",
             max_cubes=1,
@@ -279,7 +292,7 @@ def build_configs() -> list[dict[str, Any]]:
     )
     configs.extend(
         _cell(
-            "dcc_expanding_stack",
+            "dcc_residual_expanding_stack",
             seed,
             task_sequence=(
                 "creative-1-task1,creative-2-task1,"
@@ -305,13 +318,18 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
         "critic_lifecycle",
         "carry_actor",
         "dcc_carry_shared",
-        "dcc_dyn_weight",
         "dcc_combine_mode",
         "dcc_goal_encoder_mode",
+        "dcc_task_width",
+        "dcc_task_depth",
+        "architecture",
+        "num_blocks",
+        "hidden_dim",
         "observation_layout",
         "vanilla_network_type",
         "repetition_factor",
         "max_cubes",
+        "continual_eval_repeats",
     }
     allowed_runners = {
         "stable_crl.py",
@@ -348,8 +366,22 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
             and config["observation_layout"] != "semantic"
         ):
             raise ValueError("set networks require the semantic layout")
+        if (
+            config["runner"] == "continual_dcc.py"
+            and config["observation_layout"] != "semantic"
+        ):
+            raise ValueError("DCC requires the semantic layout")
         if int(config["repetition_factor"]) < 1:
             raise ValueError("repetition_factor must be positive")
+        if int(config["continual_eval_repeats"]) < 1:
+            raise ValueError("continual_eval_repeats must be positive")
+        if min(
+            int(config["num_blocks"]),
+            int(config["hidden_dim"]),
+            int(config["dcc_task_width"]),
+            int(config["dcc_task_depth"]),
+        ) < 1:
+            raise ValueError("network widths and depths must be positive")
 
         task_ids = str(config["task_sequence"]).split(",")
         matches = [_TASK_ID.fullmatch(task_id) for task_id in task_ids]

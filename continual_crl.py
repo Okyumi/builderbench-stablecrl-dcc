@@ -1,9 +1,10 @@
 """Continual vanilla contrastive-RL baselines for BuilderBench.
 
-The learner uses the same semantic wrapper, masked-set encoders, task
-manifest, and evaluation protocol as continual DCC.  Its critic is not
-decomposed.  Actor and critic lifecycles are explicit so the standard
-reset/reset and persistent/persistent controls cannot be confused.
+The learner uses the same fixed-layout wrapper, task manifest, and evaluation
+protocol as continual DCC. Its critic is not decomposed and can use either the
+legacy masked-set model or the proven flat upstream residual model. Actor and
+critic lifecycles are explicit so reset/reset and persistent/persistent
+controls cannot be confused.
 Replay buffers and optimizer states are always fresh at task boundaries.
 """
 from __future__ import annotations
@@ -24,6 +25,7 @@ from continual.eval_logging import (
     read_eval_rows,
     write_phase_rows,
 )
+from continual.evaluation import run_repeated_evaluation
 from continual.flat_upstream_networks import make_flat_upstream_networks
 from continual.grouped_layout import GroupedPadLayout
 from continual.grouped_wrapper import GroupedPadWrapper
@@ -63,6 +65,7 @@ class Args(StableCRLArgs):
     eval_next_task: bool = True
     log_continual_eval: bool = True
     wandb_eval_tables: bool = True
+    continual_eval_repeats: int = 5
 
 
 def _checkpoint_recipe(args: Args) -> dict:
@@ -77,6 +80,7 @@ def _checkpoint_recipe(args: Args) -> dict:
         "critic_lifecycle",
         "num_envs",
         "num_eval_envs",
+        "continual_eval_repeats",
         "rollout_length",
         "num_eval_steps",
         "num_reset_steps",
@@ -221,12 +225,14 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
                 args.seed + 10_000 * phase_index + eval_index
             ),
         )
-        metrics = evaluator.run_evaluation(
+        metrics = run_repeated_evaluation(
+            evaluator,
             policy_params={
                 "actor": carry["actor"],
                 "critic": carry["critic"],
             },
-            training_metrics={},
+            repeats=args.continual_eval_repeats,
+            num_eval_envs=args.num_eval_envs,
         )
         results.append({
             "phase_index": phase_index,
@@ -246,6 +252,8 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
 
 
 def main(args: Args) -> None:
+    if args.continual_eval_repeats < 1:
+        raise ValueError("continual_eval_repeats must be positive")
     task_ids = [item.strip() for item in args.task_sequence.split(",")]
     if not task_ids or any(not item for item in task_ids):
         raise ValueError("task_sequence must contain comma-separated task ids")

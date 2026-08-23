@@ -44,7 +44,7 @@ from utils.networks import MLP, save_params
 from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
-from continual.dcc_networks import make_dcc_networks, masked_dynamics_mse
+from continual.dcc_networks import make_dcc_networks
 from continual.flat_upstream_networks import make_flat_upstream_networks
 from continual.grouped_layout import GroupedPadLayout
 from continual.grouped_wrapper import GroupedPadWrapper
@@ -215,10 +215,6 @@ class Args:
 
     # continual DCC
     max_cubes: int = 8
-    dcc_dyn_weight: float = 1.0
-    dcc_dyn_weight_after_task0: float | None = None
-    dcc_shared_width: int = 512
-    dcc_shared_depth: int = 3
     dcc_task_width: int = 256
     dcc_task_depth: int = 4
     dcc_combine_mode: Literal["add", "concat"] = "add"
@@ -547,9 +543,19 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             layout=layout,
             action_size=action_size,
             rep_size=args.rep_size,
-            shared_width=args.dcc_shared_width,
+            architecture=args.architecture,
+            num_blocks=args.num_blocks,
+            hidden_dim=args.hidden_dim,
+            scale_actor_residual_by_depth=(
+                args.scale_actor_residual_by_depth
+            ),
+            scale_critic_residual_by_depth=(
+                args.scale_critic_residual_by_depth
+            ),
+            use_non_residual_critic_encoders=(
+                args.use_non_residual_critic_encoders
+            ),
             task_width=args.dcc_task_width,
-            shared_depth=args.dcc_shared_depth,
             task_depth=args.dcc_task_depth,
             combine_mode=args.dcc_combine_mode,
             goal_encoder_mode=args.dcc_goal_encoder_mode,
@@ -587,7 +593,8 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
 
     initialization_key = (
         (key_actor, key_sa, key_g)
-        if (
+        if args.critic_family == "dcc"
+        or (
             args.critic_family == "vanilla"
             and args.vanilla_network_type == "flat_upstream"
         )
@@ -632,19 +639,15 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                 f"the vanilla critic for task_index={task_index}; "
                 "optimizer state is fresh."
             )
-    dyn_weight = 0.0
     if args.critic_family == "dcc":
-        dyn_weight = (
-            args.dcc_dyn_weight
-            if task_index == 0 or args.dcc_dyn_weight_after_task0 is None
-            else args.dcc_dyn_weight_after_task0
-        )
         architecture_description = (
-            f"shared_width={args.dcc_shared_width}, "
-            f"task_width={args.dcc_task_width}, "
+            f"flat upstream {args.architecture}, "
+            f"blocks={args.num_blocks}, hidden_dim={args.hidden_dim}, "
+            f"task_blocks={args.dcc_task_depth}, "
+            f"task_hidden_dim={args.dcc_task_width}, "
             f"combine={args.dcc_combine_mode}, "
             f"goal_encoder={args.dcc_goal_encoder_mode}, "
-            f"dyn_weight={dyn_weight}"
+            "no dynamics head"
         )
     else:
         if args.vanilla_network_type == "set":
@@ -878,21 +881,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
             logsumexp_loss = args.logsumexp_cost * jnp.mean(logsumexp**2)
 
-            if args.critic_family == "dcc":
-                predicted_next, _ = networks.apply_dynamics(
-                    critic_params, state, action
-                )
-                dynamics_loss = masked_dynamics_mse(
-                    predicted_next,
-                    transitions.extras['next_achieved_goal'],
-                    args.max_cubes,
-                )
-            else:
-                dynamics_loss = jnp.asarray(0.0, dtype=logits.dtype)
-            critic_loss = (
-                info_nce_loss + logsumexp_loss
-                + dyn_weight * dynamics_loss
-            )
+            critic_loss = info_nce_loss + logsumexp_loss
 
             I = jnp.eye(logits.shape[0])
             correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
@@ -903,7 +892,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
 
             return critic_loss, (
                 logsumexp, correct, logits_pos, logits_neg,
-                info_nce_loss, logsumexp_loss, dynamics_loss,
+                info_nce_loss, logsumexp_loss,
             )
 
         (loss, aux), grad = jax.value_and_grad(
@@ -911,7 +900,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         )(training_state.critic_state.params, transitions, key)
         (
             logsumexp, correct, logits_pos, logits_neg,
-            info_nce_loss, logsumexp_loss, dynamics_loss,
+            info_nce_loss, logsumexp_loss,
         ) = aux
         new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
         training_state = training_state.replace(critic_state = new_critic_state)
@@ -924,7 +913,6 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             "critic_loss": loss,
             "critic_info_nce_loss": info_nce_loss,
             "critic_logsumexp_loss": logsumexp_loss,
-            "critic_dynamics_loss": dynamics_loss,
         }
 
         return training_state, metrics
@@ -945,7 +933,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                 lambda x: jnp.repeat(x[:n_unique], args.repetition_factor, axis=0), transitions
             )
         batch_keys = jax.random.split(key_sampling1, transitions.observation.shape[0])
-        transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_dcc_fn, in_axes=(None, 0, 0))(
+        transitions = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
             (args.discount,), transitions, batch_keys
         )
         random_indices = jax.random.randint(key_sampling2, (transitions.action.shape[0],), minval=0, maxval=transitions.action.shape[1])
@@ -1070,7 +1058,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                     # Sample a batch exactly like sgd_step, but only for visualization.
                     _, viz_trans = replay_buffer.sample(buffer_state)
                     batch_keys = jax.random.split(k_flatten, viz_trans.observation.shape[0])
-                    viz_trans = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_dcc_fn, in_axes=(None, 0, 0))(
+                    viz_trans = jax.vmap(TrajectoryUniformSamplingQueue.flatten_crl_fn, in_axes=(None, 0, 0))(
                         (args.discount,), viz_trans, batch_keys
                     )
                     random_indices = jax.random.randint(

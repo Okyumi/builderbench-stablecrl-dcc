@@ -23,7 +23,11 @@ def row(phase, task, success, scope="seen"):
         "train_task_global_id": f"train-{phase}",
         "eval_task_global_id": f"task-{task}",
         "eval/episode_success_rate": success,
+        "eval/episode_success_rate_std": 0.1,
         "eval/episode_easy_success_rate": success,
+        "eval/episode_easy_success_rate_std": 0.1,
+        "eval/repeats": 5,
+        "eval/num_episodes": 640,
     }
 
 
@@ -96,6 +100,11 @@ class EvalLoggingTest(unittest.TestCase):
         self.assertTrue(run.finished)
         self.assertEqual(len(run.logged), 1)
         self.assertIn("continual/success_matrix", run.logged[0])
+        self.assertIn("continual/success_std_matrix", run.logged[0])
+        self.assertEqual(
+            run.logged[0]["continual/task_00/episode_success_rate_std"],
+            0.1,
+        )
 
 
 if __name__ == "__main__":

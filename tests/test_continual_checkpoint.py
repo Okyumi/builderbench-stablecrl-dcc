@@ -20,6 +20,13 @@ class ContinualCheckpointTest(unittest.TestCase):
 
     def test_recipe_round_trip_and_mismatch_rejection(self):
         recipe = _checkpoint_recipe(Args())
+        self.assertEqual(
+            recipe["algorithm"],
+            "stablecrl-dcc-flat-residual-no-dynamics-v3",
+        )
+        self.assertNotIn("dcc_dyn_weight", recipe)
+        self.assertEqual(recipe["architecture"], "block")
+        self.assertEqual(recipe["continual_eval_repeats"], 5)
         carry = {"value": np.array([1.0, 2.0], dtype=np.float32)}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "task_00.pkl"

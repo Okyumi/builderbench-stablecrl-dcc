@@ -10,7 +10,7 @@ from utils.wrapper import Wrapper
 
 
 class SemanticPadWrapper(Wrapper):
-    """Expose masked fixed-size set observations from a creative MJX env.
+    """Expose masked fixed-size semantic observations from a creative MJX env.
 
     This wrapper belongs directly around the raw environment, before
     ``PDWrapper`` and ``wrap_env``. Auto-reset bookkeeping therefore stores

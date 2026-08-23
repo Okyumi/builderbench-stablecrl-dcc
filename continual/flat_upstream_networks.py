@@ -51,6 +51,7 @@ class FlatStateActionEncoder(nn.Module):
     hidden_dim: int = 1024
     norm_type: str = "layer_norm"
     scale_residual_by_depth: bool = True
+    zero_init_output: bool = False
 
     @nn.compact
     def __call__(self, observation: jnp.ndarray, action: jnp.ndarray):
@@ -88,7 +89,11 @@ class FlatStateActionEncoder(nn.Module):
                 x = nn.swish(normalize(x))
         return nn.Dense(
             self.rep_size,
-            kernel_init=_lecun_uniform(),
+            kernel_init=(
+                nn.initializers.zeros
+                if self.zero_init_output
+                else _lecun_uniform()
+            ),
             bias_init=nn.initializers.zeros,
         )(x)
 

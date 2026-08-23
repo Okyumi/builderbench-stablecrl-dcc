@@ -16,6 +16,8 @@ _MATRIX_METRICS = (
     "eval/episode_obj_goal_dist",
     "eval/avg_episode_length",
 )
+_MATRIX_STD_METRICS = tuple(f"{metric}_std" for metric in _MATRIX_METRICS)
+_EVAL_COUNT_METRICS = ("eval/repeats", "eval/num_episodes")
 
 
 def read_eval_rows(path: Path) -> list[dict[str, Any]]:
@@ -187,7 +189,7 @@ def continual_scalars(
 
     for row in current:
         task_index = int(row["eval_task_index"])
-        for metric in _MATRIX_METRICS:
+        for metric in (*_MATRIX_METRICS, *_MATRIX_STD_METRICS):
             value = _finite_metric(row, metric)
             if value is not None:
                 short_name = metric.removeprefix("eval/")
@@ -207,12 +209,21 @@ def _long_table_data(
         "critic_head_task_index",
         "train_task_global_id",
         "eval_task_global_id",
-        *_MATRIX_METRICS,
+        *_EVAL_COUNT_METRICS,
+        *(
+            metric
+            for pair in zip(_MATRIX_METRICS, _MATRIX_STD_METRICS)
+            for metric in pair
+        ),
     ]
     data = [
         [
             row.get(column)
-            if column not in _MATRIX_METRICS
+            if column not in (
+                *_MATRIX_METRICS,
+                *_MATRIX_STD_METRICS,
+                *_EVAL_COUNT_METRICS,
+            )
             else _finite_metric(row, column)
             for column in columns
         ]
@@ -285,7 +296,7 @@ def log_continual_eval_to_wandb(
             name=f"continual_eval__{tag}",
             job_type="continual-eval",
             config={
-                "continual_eval_schema": 2,
+                "continual_eval_schema": 3,
                 "training_recipe": recipe,
             },
         )
@@ -302,6 +313,12 @@ def log_continual_eval_to_wandb(
             easy_columns, easy_data = _matrix_table_data(
                 rows, "eval/episode_easy_success_rate"
             )
+            success_std_columns, success_std_data = _matrix_table_data(
+                rows, "eval/episode_success_rate_std"
+            )
+            easy_std_columns, easy_std_data = _matrix_table_data(
+                rows, "eval/episode_easy_success_rate_std"
+            )
             payload.update({
                 "continual/eval_rows": wandb.Table(
                     columns=long_columns, data=long_data
@@ -311,6 +328,12 @@ def log_continual_eval_to_wandb(
                 ),
                 "continual/easy_success_matrix": wandb.Table(
                     columns=easy_columns, data=easy_data
+                ),
+                "continual/success_std_matrix": wandb.Table(
+                    columns=success_std_columns, data=success_std_data
+                ),
+                "continual/easy_success_std_matrix": wandb.Table(
+                    columns=easy_std_columns, data=easy_std_data
                 ),
             })
         run.log(payload)

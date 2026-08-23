@@ -1,9 +1,10 @@
 """Sequential DCC training on the StableCRL MJX BuilderBench tasks.
 
-Each phase creates a fresh replay buffer and task-specific DCC encoder while
-carrying the shared backbone, shared projection, dynamics head, and shared
-goal encoder. The actor is carried by default and can be reset as an
-ablation. Boundary checkpoints contain data only and are written atomically.
+Each phase creates a fresh replay buffer and task-specific residual DCC
+adapter while carrying the upstream residual actor, shared state-action
+encoder, and shared goal encoder. The actor can be reset as an ablation.
+There is no dynamics head. Boundary checkpoints contain data only and are
+written atomically.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from continual.eval_logging import (
     read_eval_rows,
     write_phase_rows,
 )
+from continual.evaluation import run_repeated_evaluation
 from continual.semantic_layout import SemanticLayout
 from continual.semantic_wrapper import SemanticPadWrapper
 from builderbench.env_utils import make_env
@@ -56,6 +58,7 @@ class Args(StableCRLArgs):
     eval_next_task: bool = True
     log_continual_eval: bool = True
     wandb_eval_tables: bool = True
+    continual_eval_repeats: int = 5
 
 
 def _goal_for_env_id(env_id: str) -> np.ndarray:
@@ -94,6 +97,7 @@ def _checkpoint_recipe(args: Args) -> dict:
         "steps_per_task",
         "num_envs",
         "num_eval_envs",
+        "continual_eval_repeats",
         "rollout_length",
         "num_eval_steps",
         "num_reset_steps",
@@ -115,19 +119,21 @@ def _checkpoint_recipe(args: Args) -> dict:
         "pd_duration",
         "mjx_impl",
         "max_cubes",
-        "dcc_dyn_weight",
-        "dcc_dyn_weight_after_task0",
-        "dcc_shared_width",
-        "dcc_shared_depth",
         "dcc_task_width",
         "dcc_task_depth",
         "dcc_combine_mode",
         "dcc_goal_encoder_mode",
         "dcc_carry_shared",
         "carry_actor",
+        "architecture",
+        "num_blocks",
+        "hidden_dim",
+        "scale_actor_residual_by_depth",
+        "scale_critic_residual_by_depth",
+        "use_non_residual_critic_encoders",
     )
     return {
-        "algorithm": "stablecrl-dcc-semantic-set-v2",
+        "algorithm": "stablecrl-dcc-flat-residual-no-dynamics-v3",
         **{name: getattr(args, name) for name in names},
     }
 
@@ -231,9 +237,19 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
             layout=layout,
             action_size=env.action_size,
             rep_size=args.rep_size,
-            shared_width=args.dcc_shared_width,
+            architecture=args.architecture,
+            num_blocks=args.num_blocks,
+            hidden_dim=args.hidden_dim,
+            scale_actor_residual_by_depth=(
+                args.scale_actor_residual_by_depth
+            ),
+            scale_critic_residual_by_depth=(
+                args.scale_critic_residual_by_depth
+            ),
+            use_non_residual_critic_encoders=(
+                args.use_non_residual_critic_encoders
+            ),
             task_width=args.dcc_task_width,
-            shared_depth=args.dcc_shared_depth,
             task_depth=args.dcc_task_depth,
             combine_mode=args.dcc_combine_mode,
             goal_encoder_mode=args.dcc_goal_encoder_mode,
@@ -250,9 +266,11 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
                 args.seed + 10_000 * phase_index + eval_index
             ),
         )
-        metrics = evaluator.run_evaluation(
+        metrics = run_repeated_evaluation(
+            evaluator,
             policy_params={"actor": carry["actor"], "critic": critic},
-            training_metrics={},
+            repeats=args.continual_eval_repeats,
+            num_eval_envs=args.num_eval_envs,
         )
         results.append({
             "phase_index": phase_index,
@@ -272,6 +290,8 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
 
 
 def main(args: Args) -> None:
+    if args.continual_eval_repeats < 1:
+        raise ValueError("continual_eval_repeats must be positive")
     task_ids = [item.strip() for item in args.task_sequence.split(",")]
     if not task_ids or any(not item for item in task_ids):
         raise ValueError("task_sequence must contain comma-separated task ids")

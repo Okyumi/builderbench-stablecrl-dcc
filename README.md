@@ -71,10 +71,13 @@ Core SGCRL/DCC ablations are available directly, for example:
 python continual_dcc.py \
   --dcc-combine-mode concat \
   --dcc-goal-encoder-mode shared \
-  --dcc-dyn-weight 1.0 \
-  --dcc-dyn-weight-after-task0 0.0 \
+  --dcc-task-width 256 \
   --dcc-task-depth 4
 ```
+
+The DCC implementation intentionally has no dynamics head or dynamics loss.
+Its actor, shared state-action encoder, and shared goal encoder use the same
+flat residual architecture as the successful upstream StableCRL controls.
 
 Changing an algorithmic setting requires a fresh boundary-checkpoint
 directory. Resume checkpoints store and validate the full training recipe.
@@ -84,22 +87,23 @@ checkpoints, seen-task and next-task evaluation rows in
 `checkpoints/continual_dcc/continual_eval.jsonl`, and lightweight success
 matrices to a dedicated resumable W&B evaluation run.
 
-### Why this is more than padding
+### Fixed semantics across tasks
 
-Variable-cube inputs are represented as masked sets. Shared per-cube encoders
-and symmetric pooling make critic and goal representations invariant to cube
-permutation. The actor uses an equivariant pointer head: it scores each valid
-cube, maps the selected slot to BuilderBench's continuous selector action, and
-conditions motion on that cube. Padded slots are masked out of pooling,
-selection, and the DCC dynamics loss.
+Variable-cube inputs use a fixed-capacity semantic vector. Every cube keeps a
+stable BuilderBench object slot, the previous continuous selector is converted
+to a selected-object flag, and an explicit validity mask distinguishes real
+cubes from padding. DCC consumes that vector with the proven upstream residual
+MLPs. The shared state-action representation is combined with a fresh
+task-specific residual adapter; the adapter starts at zero so additive DCC is
+functionally identical to flat upstream StableCRL at initialization.
 
 Task identities use a versioned hash of canonical goal geometry. The hash is
 invariant to cube permutation and horizontal translation while preserving
 height above the ground plane, so `pick` and `place` remain distinct skills.
-The default capacity is eight cubes (`--max-cubes 8`). Set it to the largest
-known task before training. For open-ended curricula, use 4/8/12 capacity
-buckets and reuse the shared set-encoder parameters across separately compiled
-shapes rather than assigning permanent semantics to padded indices.
+Set `--max-cubes` to the largest task in the curriculum before training. A
+larger capacity changes flat residual parameter shapes and therefore requires
+a separate run or an explicit learned input adapter; it cannot be introduced
+halfway through a checkpoint sequence.
 
 ## Implementation notes
 
@@ -121,22 +125,29 @@ shapes rather than assigning permanent semantics to padded indices.
   continual, capacity-bucket, and future meta-learning protocols.
 - `docs/2026-08-23_continual_eval_and_padding_controls.md` records the matrix
   logger, padding-only/upstream controls, staged configs, and validation.
+- `docs/2026-08-23_residual_dcc_no_dynamics.md` records the diagnostic result,
+  no-dynamics DCC redesign, repeated boundary evaluation, and new Torch gate.
 
 ## NYU Torch HPC
 
-The global registry contains 66 stable indices. Existing 0--35 retain their
-original meanings. Padding diagnostics are 36--53, and the gated goal-only /
-expanding-stack protocol cells are 54--65. Every group uses seeds 5/6/7.
-`DRAFT.sh` defaults to the padding-diagnostic stage, so Slurm array slots are
-stage-relative and do not rerun 0--35.
+The registry contains 72 indices. Completed padding diagnostics are 36--53;
+the residual no-dynamics DCC parity gate is 54--59; flat-CRL protocol controls
+are 60--65; and DCC protocol cells are 66--71. Every group uses seeds 5/6/7.
+`DRAFT.sh` defaults to `dcc_residual_gate`, so an unqualified six-slot array
+runs only the required 3-block/4-block DCC parity check.
 
 ```bash
 python experiment_configs.py --list
-DRY_RUN=true CONFIG_INDEX=36 bash DRAFT.sh
+DRY_RUN=true CONFIG_INDEX=54 bash DRAFT.sh
 my_slurm_accounts
-EXPERIMENT_STAGE=padding_diagnostics \
-  sbatch --account=torch_pr_XXX_XXXXX --array=0-17 DRAFT.sh
-# Only after the diagnostic gate passes:
+EXPERIMENT_STAGE=dcc_residual_gate \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-5 DRAFT.sh
+# Only after the DCC parity gate passes:
+EXPERIMENT_STAGE=protocol_baselines \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-5 DRAFT.sh
+EXPERIMENT_STAGE=protocol_dcc \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-5 DRAFT.sh
+# Or launch both protocol halves together:
 EXPERIMENT_STAGE=protocol \
   sbatch --account=torch_pr_XXX_XXXXX --array=0-11 DRAFT.sh
 ```

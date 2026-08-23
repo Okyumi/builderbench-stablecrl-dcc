@@ -1,19 +1,22 @@
-"""Permutation-aware DCC networks for StableCRL BuilderBench.
+"""DCC decomposition on the proven upstream StableCRL residual networks.
 
-The decomposition follows DCC's shared/task split::
+The diagnostic experiments showed that fixed semantic padding is compatible
+with the upstream residual model while the masked-set network does not learn
+the 3- or 4-block controls. DCC therefore keeps the successful flat model and
+adds only its continual decomposition::
 
-    z_shared = h_phi(b_shared(s, a))
-    z_task   = phi_task(s, a)
+    z_shared = phi_shared(s, a)
+    z_task   = phi_task_t(s, a)
     z_sa     = combine(z_shared, z_task)
     z_goal   = project(psi_shared(g))
 
-``combine`` is either addition or concatenation, matching the SGCRL DCC
-ablations.  The goal projection is enabled explicitly or automatically when
-concatenation doubles the state-action representation size. ``b_shared``,
-``h_phi``, ``h_dyn``, ``psi_shared`` and an optional ``psi_proj`` transfer
-between tasks. ``phi_task`` is reinitialized at every task boundary. The
-dynamics head predicts next cube positions per slot with shared weights; its
-loss is masked, so padded slots never become artificial training targets.
+``phi_shared``, ``psi_shared``, an optional ``psi_proj``, and the upstream
+actor transfer between tasks. ``phi_task_t`` is freshly initialized at every
+task boundary and retained in a task bank for evaluation. Its output layer is
+zero initialized, so the default additive DCC model starts exactly at the
+upstream flat-network function before learning a task residual.
+
+There is deliberately no dynamics head, dynamics target, or dynamics loss.
 """
 from __future__ import annotations
 
@@ -26,102 +29,16 @@ import jax.numpy as jnp
 import numpy as np
 from flax.linen.initializers import variance_scaling
 
-from continual.semantic_layout import CUBE_FEATURE_DIM, POSITION_DIM, SemanticLayout
+from continual.flat_upstream_networks import (
+    FlatActor,
+    FlatGoalEncoder,
+    FlatStateActionEncoder,
+)
+from continual.semantic_layout import SemanticLayout
 
 
 def _lecun_uniform():
     return variance_scaling(1 / 3, "fan_in", "uniform")
-
-
-class DenseStack(nn.Module):
-    width: int
-    depth: int
-
-    @nn.compact
-    def __call__(self, x):
-        for _ in range(self.depth):
-            x = nn.Dense(self.width, kernel_init=_lecun_uniform())(x)
-            x = nn.LayerNorm()(x)
-            x = nn.swish(x)
-        return x
-
-
-def _masked_mean(values, mask):
-    weights = mask[..., None].astype(values.dtype)
-    denominator = jnp.maximum(weights.sum(axis=-2), 1.0)
-    return (values * weights).sum(axis=-2) / denominator
-
-
-def _selector_centers(mask):
-    """Continuous selector value used by PDWrapper for every valid slot."""
-    num_cubes = jnp.maximum(mask.sum(axis=-1, keepdims=True), 1.0)
-    indices = jnp.arange(mask.shape[-1], dtype=mask.dtype)
-    return (2.0 * indices + 1.0) / num_cubes - 1.0
-
-
-def _selection_weights(selector, mask, temperature=0.02):
-    centers = _selector_centers(mask)
-    logits = -jnp.square(selector - centers) / temperature
-    logits = jnp.where(mask > 0, logits, -1e9)
-    return nn.softmax(logits, axis=-1)
-
-
-def _split_observation(observation, max_cubes):
-    cube_end = max_cubes * CUBE_FEATURE_DIM
-    mask_end = cube_end + max_cubes
-    cubes = observation[..., :cube_end].reshape(
-        observation.shape[:-1] + (max_cubes, CUBE_FEATURE_DIM)
-    )
-    mask = observation[..., cube_end:mask_end]
-    return cubes, mask
-
-
-def _split_goal(goal, max_cubes):
-    position_end = max_cubes * POSITION_DIM
-    positions = goal[..., :position_end].reshape(
-        goal.shape[:-1] + (max_cubes, POSITION_DIM)
-    )
-    return positions, goal[..., position_end:]
-
-
-class SharedStateActionBackbone(nn.Module):
-    max_cubes: int
-    width: int = 512
-    depth: int = 3
-
-    @nn.compact
-    def __call__(self, observation, action):
-        cubes, mask = _split_observation(
-            observation, self.max_cubes
-        )
-        selector_weights = _selection_weights(
-            action[..., -1:], mask
-        )
-        tiled_motion = jnp.broadcast_to(
-            action[..., None, :-1],
-            cubes.shape[:-1] + (action.shape[-1] - 1,),
-        )
-        slots = DenseStack(self.width, self.depth)(
-            jnp.concatenate(
-                [cubes, tiled_motion, selector_weights[..., None]], axis=-1
-            )
-        )
-        pooled = _masked_mean(slots, mask)
-        selected = (slots * selector_weights[..., None]).sum(axis=-2)
-        global_features = jnp.concatenate(
-            [pooled, selected, action[..., :-1]], axis=-1
-        )
-        return DenseStack(self.width, 1)(global_features), slots, mask
-
-
-class SharedProjection(nn.Module):
-    rep_size: int
-
-    @nn.compact
-    def __call__(self, hidden):
-        return nn.Dense(
-            self.rep_size, kernel_init=_lecun_uniform(), name="out"
-        )(hidden)
 
 
 class GoalProjection(nn.Module):
@@ -130,129 +47,16 @@ class GoalProjection(nn.Module):
     @nn.compact
     def __call__(self, goal_repr):
         return nn.Dense(
-            self.rep_size, kernel_init=_lecun_uniform(), name="out"
+            self.rep_size,
+            kernel_init=_lecun_uniform(),
+            bias_init=nn.initializers.zeros,
+            name="out",
         )(goal_repr)
-
-
-class EquivariantDynamicsHead(nn.Module):
-    @nn.compact
-    def __call__(self, slot_hidden):
-        return nn.Dense(
-            POSITION_DIM, kernel_init=_lecun_uniform(), name="next_position"
-        )(slot_hidden)
-
-
-class TaskStateActionEncoder(nn.Module):
-    max_cubes: int
-    rep_size: int
-    width: int = 256
-    depth: int = 2
-
-    @nn.compact
-    def __call__(self, observation, action):
-        cubes, mask = _split_observation(
-            observation, self.max_cubes
-        )
-        selector_weights = _selection_weights(
-            action[..., -1:], mask
-        )
-        tiled_motion = jnp.broadcast_to(
-            action[..., None, :-1],
-            cubes.shape[:-1] + (action.shape[-1] - 1,),
-        )
-        slots = DenseStack(self.width, self.depth)(
-            jnp.concatenate(
-                [cubes, tiled_motion, selector_weights[..., None]], axis=-1
-            )
-        )
-        pooled = _masked_mean(slots, mask)
-        selected = (slots * selector_weights[..., None]).sum(axis=-2)
-        pooled = jnp.concatenate(
-            [pooled, selected, action[..., :-1]], axis=-1
-        )
-        return nn.Dense(
-            self.rep_size, kernel_init=_lecun_uniform(), name="out"
-        )(pooled)
-
-
-class SetGoalEncoder(nn.Module):
-    max_cubes: int
-    rep_size: int
-    width: int = 512
-    depth: int = 3
-
-    @nn.compact
-    def __call__(self, goal):
-        positions, mask = _split_goal(goal, self.max_cubes)
-        slots = DenseStack(self.width, self.depth)(positions)
-        pooled = _masked_mean(slots, mask)
-        # The centroid is permutation invariant and retains absolute target
-        # location, which is necessary for control.
-        centroid = _masked_mean(positions, mask)
-        return nn.Dense(
-            self.rep_size, kernel_init=_lecun_uniform(), name="out"
-        )(jnp.concatenate([pooled, centroid], axis=-1))
-
-
-class SetActor(nn.Module):
-    max_cubes: int
-    action_size: int
-    width: int = 512
-    depth: int = 3
-
-    LOG_STD_MAX = 2.0
-    LOG_STD_MIN = -5.0
-
-    @nn.compact
-    def __call__(self, observation, goal_repr):
-        cubes, mask = _split_observation(
-            observation, self.max_cubes
-        )
-        slots = DenseStack(self.width, self.depth)(cubes)
-        state_repr = _masked_mean(slots, mask)
-        goal_per_slot = jnp.broadcast_to(
-            goal_repr[..., None, :],
-            slots.shape[:-1] + (goal_repr.shape[-1],),
-        )
-        selector_logits = nn.Dense(
-            1, kernel_init=_lecun_uniform(), name="selector_logits"
-        )(jnp.concatenate([slots, goal_per_slot], axis=-1))[..., 0]
-        selector_logits = jnp.where(mask > 0, selector_logits, -1e9)
-        selector_probs = nn.softmax(selector_logits, axis=-1)
-        selected_repr = (slots * selector_probs[..., None]).sum(axis=-2)
-        hidden = DenseStack(self.width, 2)(jnp.concatenate(
-            [state_repr, selected_repr, goal_repr], axis=-1
-        ))
-        motion_dim = self.action_size - 1
-        motion_mean = nn.Dense(
-            motion_dim, kernel_init=_lecun_uniform(), name="motion_mean"
-        )(hidden)
-        motion_log_std = nn.Dense(
-            motion_dim, kernel_init=_lecun_uniform(), name="motion_log_std"
-        )(hidden)
-        selector_center = (
-            selector_probs * _selector_centers(mask)
-        ).sum(axis=-1, keepdims=True)
-        selector_mean = jnp.arctanh(jnp.clip(selector_center, -0.999, 0.999))
-        selector_log_std = nn.Dense(
-            1, kernel_init=_lecun_uniform(), name="selector_log_std"
-        )(hidden)
-        mean = jnp.concatenate([motion_mean, selector_mean], axis=-1)
-        log_std = jnp.concatenate(
-            [motion_log_std, selector_log_std], axis=-1
-        )
-        log_std = nn.tanh(log_std)
-        log_std = self.LOG_STD_MIN + 0.5 * (
-            self.LOG_STD_MAX - self.LOG_STD_MIN
-        ) * (log_std + 1.0)
-        return mean, log_std
 
 
 @dataclasses.dataclass(frozen=True)
 class DCCNetworks:
-    b_shared: nn.Module
-    h_phi: nn.Module
-    h_dyn: nn.Module
+    phi_shared: nn.Module
     phi_task: nn.Module
     psi_shared: nn.Module
     psi_proj: nn.Module | None
@@ -264,7 +68,6 @@ class DCCNetworks:
     init_task_params: Callable
     apply_sa: Callable
     apply_goal: Callable
-    apply_dynamics: Callable
 
 
 def make_dcc_networks(
@@ -272,13 +75,22 @@ def make_dcc_networks(
     layout: SemanticLayout,
     action_size: int,
     rep_size: int = 64,
-    shared_width: int = 512,
+    architecture: str = "block",
+    num_blocks: int = 8,
+    hidden_dim: int = 1024,
+    scale_actor_residual_by_depth: bool = True,
+    scale_critic_residual_by_depth: bool = True,
+    use_non_residual_critic_encoders: bool = False,
     task_width: int = 256,
-    shared_depth: int = 3,
     task_depth: int = 4,
     combine_mode: str = "add",
     goal_encoder_mode: str = "shared",
 ) -> DCCNetworks:
+    """Build a flat residual DCC model with no dynamics auxiliary."""
+    if architecture not in {"block", "default"}:
+        raise ValueError(
+            f"unknown architecture={architecture!r}; expected block/default"
+        )
     if combine_mode not in {"add", "concat"}:
         raise ValueError(
             f"combine_mode must be 'add' or 'concat', got {combine_mode!r}"
@@ -288,79 +100,93 @@ def make_dcc_networks(
             "goal_encoder_mode must be 'shared' or 'projected', got "
             f"{goal_encoder_mode!r}"
         )
-    if shared_depth < 1 or task_depth < 1:
-        raise ValueError("DCC encoder depths must be positive")
+    if min(num_blocks, hidden_dim, task_width, task_depth) < 1:
+        raise ValueError("DCC residual widths and depths must be positive")
 
+    residual_actor = architecture == "block"
+    residual_critic = (
+        architecture == "block" and not use_non_residual_critic_encoders
+    )
     critic_rep_size = rep_size if combine_mode == "add" else 2 * rep_size
     use_goal_projection = (
         goal_encoder_mode == "projected" or combine_mode == "concat"
     )
-    b_shared = SharedStateActionBackbone(
-        max_cubes=layout.max_cubes,
-        width=shared_width,
-        depth=shared_depth,
-    )
-    h_phi = SharedProjection(rep_size=rep_size)
-    h_dyn = EquivariantDynamicsHead()
-    phi_task = TaskStateActionEncoder(
-        max_cubes=layout.max_cubes,
+
+    phi_shared = FlatStateActionEncoder(
         rep_size=rep_size,
-        width=task_width,
-        depth=task_depth,
+        residual=residual_critic,
+        num_blocks=num_blocks,
+        hidden_dim=hidden_dim,
+        scale_residual_by_depth=scale_critic_residual_by_depth,
     )
-    psi_shared = SetGoalEncoder(
-        max_cubes=layout.max_cubes,
+    phi_task = FlatStateActionEncoder(
         rep_size=rep_size,
-        width=shared_width,
-        depth=shared_depth,
+        residual=residual_critic,
+        num_blocks=task_depth,
+        hidden_dim=task_width,
+        scale_residual_by_depth=True,
+        zero_init_output=True,
+    )
+    psi_shared = FlatGoalEncoder(
+        rep_size=rep_size,
+        residual=residual_critic,
+        num_blocks=num_blocks,
+        hidden_dim=hidden_dim,
+        scale_residual_by_depth=scale_critic_residual_by_depth,
     )
     psi_proj = (
         GoalProjection(rep_size=critic_rep_size)
         if use_goal_projection
         else None
     )
-    actor = SetActor(
-        max_cubes=layout.max_cubes,
+    actor = FlatActor(
         action_size=action_size,
-        width=shared_width,
+        residual=residual_actor,
+        num_blocks=num_blocks,
+        hidden_dim=hidden_dim,
+        scale_residual_by_depth=scale_actor_residual_by_depth,
     )
 
-    dummy_obs = np.zeros((1, layout.observation_size), dtype=np.float32)
-    dummy_action = np.zeros((1, action_size), dtype=np.float32)
-    dummy_goal = np.zeros((1, layout.goal_size), dtype=np.float32)
-    # A valid first slot avoids a degenerate all-padding init input.
-    dummy_obs[:, layout.max_cubes * CUBE_FEATURE_DIM] = 1.0
-    dummy_goal[:, layout.max_cubes * POSITION_DIM] = 1.0
+    dummy_obs = np.ones((1, layout.observation_size), dtype=np.float32)
+    dummy_action = np.ones((1, action_size), dtype=np.float32)
+    dummy_goal = np.ones((1, layout.goal_size), dtype=np.float32)
 
-    def _init_parts(key):
-        keys = jax.random.split(key, 7)
-        b_params = b_shared.init(keys[0], dummy_obs, dummy_action)
-        hidden, slots, _ = b_shared.apply(b_params, dummy_obs, dummy_action)
+    def _keys(key):
+        if isinstance(key, tuple):
+            key_actor, key_shared, key_goal = key
+        else:
+            key_actor, key_shared, key_goal = jax.random.split(key, 3)
+        return (
+            key_actor,
+            key_shared,
+            key_goal,
+            jax.random.fold_in(key_shared, 1),
+            jax.random.fold_in(key_goal, 1),
+        )
+
+    def init_params(key):
+        key_actor, key_shared, key_goal, key_task, key_projection = _keys(key)
         parts = {
-            "b_shared": b_params,
-            "h_phi": h_phi.init(keys[1], hidden),
-            "h_dyn": h_dyn.init(keys[2], slots),
-            "phi_task": phi_task.init(keys[3], dummy_obs, dummy_action),
-            "psi_shared": psi_shared.init(keys[4], dummy_goal),
+            "phi_shared": phi_shared.init(
+                key_shared, dummy_obs, dummy_action
+            ),
+            "phi_task": phi_task.init(key_task, dummy_obs, dummy_action),
+            "psi_shared": psi_shared.init(key_goal, dummy_goal),
         }
         goal_repr = psi_shared.apply(parts["psi_shared"], dummy_goal)
         if psi_proj is not None:
-            parts["psi_proj"] = psi_proj.init(keys[5], goal_repr)
+            parts["psi_proj"] = psi_proj.init(key_projection, goal_repr)
             goal_repr = psi_proj.apply(parts["psi_proj"], goal_repr)
-        parts["actor"] = actor.init(keys[6], dummy_obs, goal_repr)
+        parts["actor"] = actor.init(key_actor, dummy_obs, goal_repr)
         return parts
-
-    def init_params(key):
-        return _init_parts(key)
 
     def init_task_params(key):
         return phi_task.init(key, dummy_obs, dummy_action)
 
     def apply_sa(params, observation, action):
-        hidden, _, _ = b_shared.apply(
-            params["b_shared"], observation, action
+        shared = phi_shared.apply(
+            params["phi_shared"], observation, action
         )
-        shared = h_phi.apply(params["h_phi"], hidden)
         task = phi_task.apply(params["phi_task"], observation, action)
         if combine_mode == "add":
             return shared + task
@@ -372,17 +198,8 @@ def make_dcc_networks(
             goal_repr = psi_proj.apply(params["psi_proj"], goal_repr)
         return goal_repr
 
-    def apply_dynamics(params, observation, action):
-        _, slots, mask = b_shared.apply(
-            params["b_shared"], observation, action
-        )
-        prediction = h_dyn.apply(params["h_dyn"], slots)
-        return prediction, mask
-
     return DCCNetworks(
-        b_shared=b_shared,
-        h_phi=h_phi,
-        h_dyn=h_dyn,
+        phi_shared=phi_shared,
         phi_task=phi_task,
         psi_shared=psi_shared,
         psi_proj=psi_proj,
@@ -390,9 +207,7 @@ def make_dcc_networks(
         combine_mode=combine_mode,
         goal_encoder_mode=goal_encoder_mode,
         shared_groups=(
-            "b_shared",
-            "h_phi",
-            "h_dyn",
+            "phi_shared",
             "psi_shared",
             *(("psi_proj",) if psi_proj is not None else ()),
         ),
@@ -400,13 +215,4 @@ def make_dcc_networks(
         init_task_params=init_task_params,
         apply_sa=apply_sa,
         apply_goal=apply_goal,
-        apply_dynamics=apply_dynamics,
     )
-
-
-def masked_dynamics_mse(predicted_positions, next_goal, max_cubes):
-    """MSE over real cube slots only; padded slots have exactly zero weight."""
-    target_positions, target_mask = _split_goal(next_goal, max_cubes)
-    squared_error = jnp.square(predicted_positions - target_positions).sum(-1)
-    denominator = jnp.maximum(target_mask.sum(), 1.0)
-    return (squared_error * target_mask).sum() / denominator

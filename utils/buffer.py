@@ -144,23 +144,6 @@ class TrajectoryUniformSamplingQueue():
 
     @staticmethod
     @functools.partial(jax.jit, static_argnames=("buffer_config"))
-    def flatten_crl_dcc_fn(buffer_config, transition, sample_key):
-        """CRL relabelling with the aligned next achieved goal for DCC.
-
-        ``flatten_crl_fn`` intentionally rebuilds ``extras``. Adding the
-        dynamics target afterwards prevents it from being silently dropped.
-        The target at row ``t`` is the achieved goal at ``t + 1`` and has the
-        same leading shape as the flattened observation/action arrays.
-        """
-        flattened = TrajectoryUniformSamplingQueue.flatten_crl_fn(
-            buffer_config, transition, sample_key
-        )
-        extras = dict(flattened.extras)
-        extras["next_achieved_goal"] = transition.achieved_goal[1:]
-        return flattened._replace(extras=extras)
-    
-    @staticmethod
-    @functools.partial(jax.jit, static_argnames=("buffer_config"))
     def flatten_sac_her_fn(buffer_config, transition, sample_key):
 
         gamma, = buffer_config

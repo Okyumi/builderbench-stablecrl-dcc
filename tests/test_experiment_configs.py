@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class ExperimentConfigsTest(unittest.TestCase):
     def test_batch_is_baseline_first_and_retains_sgcrl_cells(self):
         configs = experiment_configs.build_configs()
-        self.assertEqual(len(configs), 66)
+        self.assertEqual(len(configs), 72)
         self.assertEqual({config["seed"] for config in configs}, {5, 6, 7})
         self.assertEqual(
             Counter(config["name"] for config in configs),
@@ -29,8 +29,8 @@ class ExperimentConfigsTest(unittest.TestCase):
                 "dcc_single_four_stack": 3,
                 "crl_reset_reset": 3,
                 "crl_persistent_persistent": 3,
-                "dcc_persistent_actor_dynamics": 3,
-                "dcc_persistent_actor_no_dynamics": 3,
+                "dcc_add_shared_no_dynamics": 3,
+                "dcc_concat_projected_no_dynamics": 3,
                 "dcc_crtr12_three_stack": 3,
                 "dcc_crtr12_four_stack": 3,
                 "grouped_pad_upstream_three_stack": 3,
@@ -39,10 +39,12 @@ class ExperimentConfigsTest(unittest.TestCase):
                 "semantic_pad_upstream_four_stack": 3,
                 "semantic_set_capacity4_three_stack": 3,
                 "semantic_set_capacity4_four_stack": 3,
+                "dcc_residual_no_dyn_three_stack": 3,
+                "dcc_residual_no_dyn_four_stack": 3,
                 "flat_crl_goal_only_1cube": 3,
                 "flat_crl_expanding_stack": 3,
-                "dcc_goal_only_1cube": 3,
-                "dcc_expanding_stack": 3,
+                "dcc_residual_goal_only_1cube": 3,
+                "dcc_residual_expanding_stack": 3,
             },
         )
 
@@ -84,18 +86,25 @@ class ExperimentConfigsTest(unittest.TestCase):
             )
         )
 
-        dynamics = configs[24:27]
-        no_dynamics = configs[27:30]
+        additive = configs[24:27]
+        concatenated = configs[27:30]
         crtr = configs[30:36]
-        self.assertTrue(all(config["carry_actor"] for config in dynamics))
+        self.assertTrue(all(config["carry_actor"] for config in additive))
         self.assertTrue(
-            all(config["dcc_dyn_weight"] == 1.0 for config in dynamics)
+            all(config["dcc_combine_mode"] == "add" for config in additive)
         )
         self.assertTrue(
-            all(config["repetition_factor"] == 1 for config in dynamics)
+            all(config["repetition_factor"] == 1 for config in additive)
         )
         self.assertTrue(
-            all(config["dcc_dyn_weight"] == 0.0 for config in no_dynamics)
+            all(
+                config["dcc_combine_mode"] == "concat"
+                and config["dcc_goal_encoder_mode"] == "projected"
+                for config in concatenated
+            )
+        )
+        self.assertTrue(
+            all("dcc_dyn_weight" not in config for config in configs)
         )
         self.assertTrue(
             all(config["repetition_factor"] == 12 for config in crtr)
@@ -104,7 +113,7 @@ class ExperimentConfigsTest(unittest.TestCase):
             all(len(config["task_sequence"].split(",")) == 1 for config in crtr)
         )
         names = {config["name"] for config in configs}
-        self.assertEqual(len(names), 22)
+        self.assertEqual(len(names), 24)
         self.assertTrue(
             all(config["wandb_group"] == config["name"] for config in configs)
         )
@@ -120,6 +129,17 @@ class ExperimentConfigsTest(unittest.TestCase):
                 for config in configs[36:42]
             )
         )
+        self.assertTrue(
+            all(
+                config["runner"] == "continual_dcc.py"
+                and config["repetition_factor"] == 12
+                and config["max_cubes"] == 4
+                for config in configs[54:60]
+            )
+        )
+        self.assertTrue(
+            all(config["continual_eval_repeats"] == 5 for config in configs)
+        )
 
     def test_cli_counts_and_array_sizes(self):
         def output(*args):
@@ -129,10 +149,10 @@ class ExperimentConfigsTest(unittest.TestCase):
                 text=True,
             ).strip()
 
-        self.assertEqual(output("--total"), "66")
-        self.assertEqual(output("--array-max"), "65")
+        self.assertEqual(output("--total"), "72")
+        self.assertEqual(output("--array-max"), "71")
         self.assertEqual(
-            output("--array-max", "--tasks-per-gpu", "2"), "32"
+            output("--array-max", "--tasks-per-gpu", "2"), "35"
         )
         self.assertEqual(
             output("--stage-start", "padding_diagnostics"), "36"
@@ -147,7 +167,10 @@ class ExperimentConfigsTest(unittest.TestCase):
         setting = output("--setting", "0")
         self.assertIn("NAME=upstream_scaled_crtr_three_stack", setting)
         self.assertIn("SEED=5", setting)
-        self.assertIn("DCC_DYN_WEIGHT_AFTER_TASK0=''", setting)
+        self.assertIn("CONTINUAL_EVAL_REPEATS=5", setting)
+        self.assertNotIn("DCC_DYN_WEIGHT", setting)
+        self.assertEqual(output("--stage-start", "dcc_residual_gate"), "54")
+        self.assertEqual(output("--stage-end", "protocol_dcc"), "71")
 
     def _draft_output(self, config_index):
         with tempfile.TemporaryDirectory() as directory:
@@ -195,10 +218,14 @@ class ExperimentConfigsTest(unittest.TestCase):
         self.assertIn("--critic-lifecycle reset", vanilla)
         self.assertIn("--resume", vanilla)
 
-        dcc = self._draft_output(24)
+        dcc = self._draft_output(54)
         self.assertIn("continual_dcc.py", dcc)
-        self.assertIn("--dcc-dyn-weight 1.0", dcc)
-        self.assertIn("--carry-actor", dcc)
+        self.assertNotIn("dcc-dyn", dcc)
+        self.assertIn("--architecture block", dcc)
+        self.assertIn("--num-blocks 8", dcc)
+        self.assertIn("--hidden-dim 1024", dcc)
+        self.assertIn("--continual-eval-repeats 5", dcc)
+        self.assertIn("--no-carry-actor", dcc)
 
         padded = self._draft_output(36)
         self.assertIn("--observation-layout grouped", padded)

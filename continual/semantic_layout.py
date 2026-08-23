@@ -1,9 +1,11 @@
-"""Fixed-size, permutation-safe layout for variable-cube BuilderBench tasks.
+"""Fixed-size semantic layout for variable-cube BuilderBench tasks.
 
 Padding by itself gives every slot a stable *shape* but not a stable meaning.
-This module pairs padding with an explicit validity mask. Networks consume the
-slots with shared per-cube weights and symmetric pooling, so permuting cube
-identities cannot change their representation.
+This module preserves BuilderBench object order, attaches the previous
+selection to its object record, and adds an explicit validity mask. Masked-set
+consumers may be permutation invariant; flat residual consumers instead rely
+on the environment contract that object index has stable meaning across the
+selected curriculum.
 
 The David-Yan MJX creative environment emits grouped observations::
 
@@ -15,8 +17,8 @@ We convert that to::
     [cube_0(14), ..., cube_M(14), valid_mask(M)]
 
 The fourteenth per-cube feature is a one-hot flag for the previously selected
-cube. Keeping selection attached to the cube (rather than retaining its raw
-index-valued scalar) is necessary for permutation equivariance.
+cube. Keeping selection attached to the cube avoids changing the meaning of
+the raw index-valued scalar when the number of valid cubes changes.
 
 Goals use ``[positions(3M), valid_mask(M)]``. ``delta_control=True`` adds a
 per-cube control field to the upstream observation and is deliberately
