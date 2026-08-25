@@ -132,6 +132,10 @@ halfway through a checkpoint sequence.
 - `docs/2026-08-23_smoke_preflight_fixes.md` records the first Torch preflight
   failures, the restored standalone vanilla set control, and launcher-test
   environment isolation.
+- `docs/2026-08-25_matched_continual_algorithm_benchmark.md` defines the
+  matched CRTR-12 continual comparison, its W&B matrices and AUC metrics, and
+  the separate goal-only, expanding four-stack, and optional five-stack
+  launch stages.
 
 ## NYU Torch HPC
 
@@ -140,6 +144,30 @@ the residual no-dynamics DCC parity gate is 54--59; flat-CRL protocol controls
 are 60--65; and DCC protocol cells are 66--71. Every group uses seeds 5/6/7.
 `DRAFT.sh` defaults to `dcc_residual_gate`, so an unqualified six-slot array
 runs only the required 3-block/4-block DCC parity check.
+
+For new continual experiments, use the dedicated matched registry and
+wrappers. Unlike the historical protocol cells 60--71, all three methods use
+the same CRTR-12 objective, flat residual encoders, budgets, and seeds:
+
+```bash
+python continual_experiment_configs.py --list
+sbatch --account=torch_pr_XXX_XXXXX DRAFT_CONTINUAL_SMOKE.sh
+EXPERIMENT_STAGE=smoke_expanding_4stack \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-2 \
+  DRAFT_CONTINUAL_SMOKE.sh
+# After both smoke stages pass:
+sbatch --account=torch_pr_XXX_XXXXX DRAFT_CONTINUAL.sh
+```
+
+The production wrapper's default `core` stage is an 18-cell comparison of
+reset/reset StableCRL, persistent/persistent StableCRL, and residual DCC on
+the goal-only and expanding four-stack tracks. The optional five-stack stage
+uses a fresh fixed-capacity model and checkpoint family:
+
+```bash
+EXPERIMENT_STAGE=expanding_5stack \
+  sbatch --account=torch_pr_XXX_XXXXX --array=0-8 DRAFT_CONTINUAL.sh
+```
 
 Run the dedicated three-cell GPU smoke gate before the 200M-step parity gate:
 

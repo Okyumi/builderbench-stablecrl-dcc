@@ -44,6 +44,7 @@ from utils.networks import MLP, save_params
 from utils.jax import count_parameters
 from builderbench.env_utils import make_env
 from utils.buffer import TrajectoryUniformSamplingQueue
+from continual_auc import OnlineNormalizedAUC
 from continual.dcc_networks import make_dcc_networks
 from continual.flat_upstream_networks import make_flat_upstream_networks
 from continual.grouped_layout import GroupedPadLayout
@@ -959,6 +960,8 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         return training_state, buffer_state, metrics
 
     training_walltime, data_collect_step_time, learn_step_time = 0, 0, 0
+    strict_success_auc = OnlineNormalizedAUC()
+    easy_success_auc = OnlineNormalizedAUC()
     xt = time.time()
     metrics = None
 
@@ -1028,6 +1031,19 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                     "critic": training_state.critic_state.params,
                 },
                 training_metrics=metrics,
+            )
+            env_steps = float(np.asarray(metrics["training/env_steps"]))
+            strict_success = float(
+                np.asarray(metrics["eval/episode_success_rate"])
+            )
+            easy_success = float(
+                np.asarray(metrics["eval/episode_easy_success_rate"])
+            )
+            metrics["eval/episode_success_rate_auc"] = (
+                strict_success_auc.update(env_steps, strict_success)
+            )
+            metrics["eval/episode_easy_success_rate_auc"] = (
+                easy_success_auc.update(env_steps, easy_success)
             )
 
             video_path_file = None
