@@ -111,6 +111,14 @@ class DiverseContinualConfigsTest(unittest.TestCase):
         self.assertIn(SEQUENCE_A[0], output)
         self.assertIn(SEQUENCE_A[-1], output)
 
+    def test_smoke_and_production_use_different_checkpoint_namespaces(self):
+        script = (REPO_ROOT / "DRAFT_DIVERSE_CONTINUAL.sh").read_text()
+        self.assertIn(
+            'DEFAULT_RUN_NAMESPACE="diverse_sequence_a_smoke"', script
+        )
+        self.assertIn('DEFAULT_RUN_NAMESPACE="diverse_sequence_a"', script)
+        self.assertIn('checkpoints/${RUN_NAMESPACE}', script)
+
 
 if __name__ == "__main__":
     unittest.main()

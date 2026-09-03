@@ -75,7 +75,9 @@ sbatch DRAFT_DIVERSE_CONTINUAL.sh
 ```
 
 The script already specifies the Torch account, one GPU per job, and array
-indices 0--8. To summarize completed runs:
+indices 0--8. Smoke outputs use the `diverse_sequence_a_smoke` namespace;
+production outputs use `diverse_sequence_a`, so production resume cannot pick
+up a short-budget checkpoint. To summarize completed production runs:
 
 ```bash
 python summarize_diverse_continual.py \

@@ -65,9 +65,15 @@ export TASK_DATA_VERSION="${TASK_DATA_VERSION:-builderbench-de9130-direct-v1}"
 export EVAL_NEXT_TASK="${EVAL_NEXT_TASK:-false}"
 export EVAL_PREVIOUS_TASKS="${EVAL_PREVIOUS_TASKS:-false}"
 export REPORT_RETENTION_METRICS="${REPORT_RETENTION_METRICS:-false}"
-export WANDB_GROUP_PREFIX="${WANDB_GROUP_PREFIX:-torch_dcc_diverse_sequence_a}"
-export LOG_ROOT="${LOG_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/logs/diverse_sequence_a}"
-export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a}"
-export WANDB_DIR="${WANDB_DIR:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/wandb/diverse_sequence_a}"
+if [ "$EXPERIMENT_STAGE" = "smoke" ]; then
+  DEFAULT_RUN_NAMESPACE="diverse_sequence_a_smoke"
+else
+  DEFAULT_RUN_NAMESPACE="diverse_sequence_a"
+fi
+RUN_NAMESPACE="${RUN_NAMESPACE:-$DEFAULT_RUN_NAMESPACE}"
+export WANDB_GROUP_PREFIX="${WANDB_GROUP_PREFIX:-torch_dcc_${RUN_NAMESPACE}}"
+export LOG_ROOT="${LOG_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/logs/${RUN_NAMESPACE}}"
+export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/checkpoints/${RUN_NAMESPACE}}"
+export WANDB_DIR="${WANDB_DIR:-${SCRATCH_ROOT}/builderbench-stablecrl-dcc/wandb/${RUN_NAMESPACE}}"
 
 exec bash "$REPO_DIR/DRAFT.sh"
