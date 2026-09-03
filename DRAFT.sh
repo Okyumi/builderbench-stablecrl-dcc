@@ -97,6 +97,9 @@ MJX_IMPL="${MJX_IMPL:-warp}"
 TRACK="${TRACK:-true}"
 SAVE_CHECKPOINT="${SAVE_CHECKPOINT:-true}"
 RECORD_VIDEOS="${RECORD_VIDEOS:-false}"
+VIDEO_TARGET_COUNT="${VIDEO_TARGET_COUNT:-0}"
+VIDEO_EVERY_N_EVALS="${VIDEO_EVERY_N_EVALS:-1}"
+VIDEO_FPS="${VIDEO_FPS:-10}"
 VISUALIZE_SAMPLES="${VISUALIZE_SAMPLES:-false}"
 RESUME="${RESUME:-true}"
 EVAL_NEXT_TASK="${EVAL_NEXT_TASK:-true}"
@@ -253,6 +256,11 @@ for ((slot = 0; slot < SLOTS; slot++)); do
   fi
 
   eval "$("$PYTHON_BIN" "$CONFIG_REGISTRY_PATH" --setting "$CONFIG_IDX")"
+  if [ "$RECORD_VIDEOS" = "true" ] && [ "$VIDEO_TARGET_COUNT" -gt 0 ]; then
+    VIDEO_EVERY_N_EVALS=$((
+      (NUM_EVAL_STEPS + VIDEO_TARGET_COUNT - 1) / VIDEO_TARGET_COUNT
+    ))
+  fi
   if [ "$NUM_ENVS" -lt "$REPETITION_FACTOR" ]; then
     echo "NUM_ENVS=${NUM_ENVS} must be at least " \
       "REPETITION_FACTOR=${REPETITION_FACTOR} for config ${CONFIG_IDX}" >&2
@@ -280,6 +288,8 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     --min-replay-size "$MIN_REPLAY_SIZE"
     --num-eval-steps "$NUM_EVAL_STEPS"
     --num-reset-steps "$NUM_RESET_STEPS"
+    --video-every-n-evals "$VIDEO_EVERY_N_EVALS"
+    --video-fps "$VIDEO_FPS"
     --repetition-factor "$REPETITION_FACTOR"
     --pd-duration "$PD_DURATION"
     --wandb-project-name "$WANDB_PROJECT_NAME"

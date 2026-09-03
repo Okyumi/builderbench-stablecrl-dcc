@@ -381,11 +381,20 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
             "eval_next_task",
             "eval_previous_tasks",
             "report_retention_metrics",
+            "record_videos",
         ):
             if measurement_flag in config and not isinstance(
                 config[measurement_flag], bool
             ):
                 raise ValueError(f"{measurement_flag} must be boolean")
+        for positive_video_setting in ("video_target_count", "video_fps"):
+            if (
+                positive_video_setting in config
+                and int(config[positive_video_setting]) < 1
+            ):
+                raise ValueError(
+                    f"{positive_video_setting} must be positive"
+                )
         if min(
             int(config["num_blocks"]),
             int(config["hidden_dim"]),

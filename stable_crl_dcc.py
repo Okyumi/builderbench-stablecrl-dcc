@@ -1164,17 +1164,24 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             print(f'\nEvaluation step {es}:\n')
             pprint.pprint(metrics)
             if args.track:
-                wandb.log(metrics, step=es)
+                wandb_payload = dict(metrics)
                 if video_path_file is not None and os.path.exists(video_path_file):
                     try:
-                        wandb.log({"eval/video": wandb.Video(video_path_file, fps=args.video_fps, format="gif")}, step=es)
+                        wandb_payload["eval/video"] = wandb.Video(
+                            video_path_file,
+                            fps=args.video_fps,
+                            format="gif",
+                        )
                     except Exception as e:
                         print(f"wandb video log failed at eval {es}: {e}")
                 if viz_path_file is not None and os.path.exists(viz_path_file):
                     try:
-                        wandb.log({"train/samples": wandb.Image(viz_path_file)}, step=es)
+                        wandb_payload["train/samples"] = wandb.Image(
+                            viz_path_file
+                        )
                     except Exception as e:
                         print(f"wandb sample viz log failed at eval {es}: {e}")
+                wandb.log(wandb_payload, step=es)
                 if args.wandb_mode == 'offline':
                     trigger_sync()
 

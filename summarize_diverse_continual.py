@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -103,12 +104,64 @@ def write_results(rows: list[dict[str, Any]], output: Path) -> None:
         writer.writerows(rows)
 
 
+def upload_results_to_wandb(
+    rows: list[dict[str, Any]],
+    *,
+    project: str,
+    entity: str | None,
+    group: str,
+    mode: str,
+) -> None:
+    """Upload the completed cross-run comparison after all jobs finish."""
+    import wandb
+
+    run = wandb.init(
+        project=project,
+        entity=entity or None,
+        group=group,
+        name="sequence_a_forward_transfer_summary",
+        job_type="continual-summary",
+        mode=mode,
+    )
+    run.log({
+        "forward_transfer/per_task": wandb.Table(
+            columns=list(_FIELDS),
+            data=[[row.get(field, "") for field in _FIELDS] for row in rows],
+        )
+    })
+    for method in sorted({str(row["method"]) for row in rows}):
+        method_rows = [row for row in rows if row["method"] == method]
+        for field in (
+            "forward_transfer_gain_vs_reset",
+            "adaptation_auc_gain_vs_reset",
+        ):
+            values = [
+                float(row[field])
+                for row in method_rows
+                if row.get(field, "") != ""
+            ]
+            if values:
+                run.summary[f"{method}/mean_{field}"] = statistics.fmean(
+                    values
+                )
+    run.finish()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Summarize Sequence A task adaptation and forward transfer."
     )
     parser.add_argument("--checkpoint-root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--upload-wandb", action="store_true")
+    parser.add_argument(
+        "--wandb-project", default="builderbench-stablecrl-dcc"
+    )
+    parser.add_argument("--wandb-entity")
+    parser.add_argument(
+        "--wandb-group", default="torch_dcc_diverse_sequence_a"
+    )
+    parser.add_argument("--wandb-mode", default="online")
     args = parser.parse_args()
     output = args.output or args.checkpoint_root / "forward_transfer_summary.csv"
     rows = collect_results(args.checkpoint_root)
@@ -119,6 +172,15 @@ def main() -> None:
         )
     write_results(rows, output)
     print(f"Wrote {len(rows)} per-task rows to {output}")
+    if args.upload_wandb:
+        upload_results_to_wandb(
+            rows,
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=args.wandb_group,
+            mode=args.wandb_mode,
+        )
+        print("Uploaded the per-task comparison table to W&B")
 
 
 if __name__ == "__main__":

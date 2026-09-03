@@ -54,6 +54,9 @@ class DiverseContinualConfigsTest(unittest.TestCase):
                 self.assertFalse(cell["eval_next_task"])
                 self.assertFalse(cell["eval_previous_tasks"])
                 self.assertFalse(cell["report_retention_metrics"])
+                self.assertTrue(cell["record_videos"])
+                self.assertEqual(cell["video_target_count"], 10)
+                self.assertEqual(cell["video_fps"], 10)
 
     def test_registry_cli(self):
         def output(*args):
@@ -108,6 +111,9 @@ class DiverseContinualConfigsTest(unittest.TestCase):
         self.assertIn("--no-eval-next-task", output)
         self.assertIn("--no-eval-previous-tasks", output)
         self.assertIn("--no-report-retention-metrics", output)
+        self.assertIn("--record-videos", output)
+        self.assertIn("--video-every-n-evals 5", output)
+        self.assertIn("--video-fps 10", output)
         self.assertIn(SEQUENCE_A[0], output)
         self.assertIn(SEQUENCE_A[-1], output)
 

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from summarize_diverse_continual import collect_results
+from summarize_diverse_continual import collect_results, upload_results_to_wandb
 
 
 def _write_row(
@@ -58,6 +61,45 @@ class DiverseContinualSummaryTest(unittest.TestCase):
                 "adaptation_auc_gain_vs_reset"
             ],
             0.3,
+        )
+
+    def test_uploads_table_and_aggregate_summaries_to_wandb(self):
+        class FakeRun:
+            def __init__(self):
+                self.logged = []
+                self.summary = {}
+                self.finished = False
+
+            def log(self, payload):
+                self.logged.append(payload)
+
+            def finish(self):
+                self.finished = True
+
+        run = FakeRun()
+        fake_wandb = types.ModuleType("wandb")
+        fake_wandb.init = lambda **kwargs: run
+        fake_wandb.Table = lambda **kwargs: kwargs
+        rows = [{
+            "method": "dcc",
+            "seed": 5,
+            "task_index": 1,
+            "env_id": "task-1",
+            "forward_transfer_gain_vs_reset": 0.2,
+            "adaptation_auc_gain_vs_reset": 0.3,
+        }]
+        with mock.patch.dict(sys.modules, {"wandb": fake_wandb}):
+            upload_results_to_wandb(
+                rows,
+                project="project",
+                entity=None,
+                group="group",
+                mode="offline",
+            )
+        self.assertTrue(run.finished)
+        self.assertIn("forward_transfer/per_task", run.logged[0])
+        self.assertAlmostEqual(
+            run.summary["dcc/mean_forward_transfer_gain_vs_reset"], 0.2
         )
 
 

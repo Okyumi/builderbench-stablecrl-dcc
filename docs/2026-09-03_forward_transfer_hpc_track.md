@@ -37,6 +37,23 @@ AUC includes both transferred starting ability and subsequent adaptation
 speed. The result is stored in the task's W&B run, its
 `task_adaptation.json`, and the continual run's `continual_eval.jsonl`.
 
+## Training-progress videos
+
+Every Sequence A config enables video recording. Production uses 50 evaluation
+points and a target of 10 videos, so one deterministic evaluation episode is
+recorded at evaluation steps 5, 10, ..., 50 for every task, seed, and
+algorithm. Each video is saved locally and uploaded in the same W&B history
+row as its numerical metrics under `eval/video`.
+
+This produces 810 production videos:
+
+```text
+9 tasks x 3 algorithms x 3 seeds x 10 training points = 810 videos
+```
+
+“About ten” refers to the per-task cadence. A smoke run has only four
+evaluation points, so it records four videos per task.
+
 After all jobs finish, `summarize_diverse_continual.py` creates one row per
 method, seed, and task. For tasks 2--9 it reports two matched-seed comparisons
 against Reset StableCRL:
@@ -81,5 +98,9 @@ up a short-budget checkpoint. To summarize completed production runs:
 
 ```bash
 python summarize_diverse_continual.py \
-  --checkpoint-root /scratch/$USER/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a
+  --checkpoint-root /scratch/$USER/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a \
+  --upload-wandb
 ```
+
+This uploads `forward_transfer/per_task` as a W&B table and stores the mean
+matched-seed forward-transfer and adaptation-AUC gains in the summary run.

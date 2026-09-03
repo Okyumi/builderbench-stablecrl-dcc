@@ -114,12 +114,14 @@ sbatch --account=torch_pr_XXX_XXXXX DRAFT_DIVERSE_CONTINUAL.sh
 This track measures each task immediately after its real reset/transfer
 initialization, then uses that success value as the step-zero point of the
 task's normalized adaptation AUC. It does not evaluate old tasks or report
-forgetting. After the jobs finish, create the matched-seed forward-transfer
-and AUC comparison with:
+forgetting. Each full task run also uploads ten evenly spaced policy videos
+to W&B under `eval/video`. After the jobs finish, create and upload the
+matched-seed forward-transfer and AUC comparison with:
 
 ```bash
 python summarize_diverse_continual.py \
-  --checkpoint-root /scratch/$USER/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a
+  --checkpoint-root /scratch/$USER/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a \
+  --upload-wandb
 ```
 
 DCC has no dynamics prediction head or dynamics loss. It retains a fresh

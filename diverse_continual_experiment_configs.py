@@ -18,6 +18,9 @@ FORWARD_TRANSFER_MEASUREMENT = {
     "eval_next_task": False,
     "eval_previous_tasks": False,
     "report_retention_metrics": False,
+    "record_videos": True,
+    "video_target_count": 10,
+    "video_fps": 10,
 }
 STAGES = {
     "smoke": (0, 2),
