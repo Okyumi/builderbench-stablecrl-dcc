@@ -960,8 +960,51 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         return training_state, buffer_state, metrics
 
     training_walltime, data_collect_step_time, learn_step_time = 0, 0, 0
-    strict_success_auc = OnlineNormalizedAUC()
-    easy_success_auc = OnlineNormalizedAUC()
+    initial_eval_metrics = evaluator.run_evaluation(
+        policy_params={
+            "actor": training_state.actor_state.params,
+            "critic": training_state.critic_state.params,
+        },
+        training_metrics={},
+    )
+    initial_strict_success = float(
+        np.asarray(initial_eval_metrics["eval/episode_success_rate"])
+    )
+    initial_easy_success = float(
+        np.asarray(initial_eval_metrics["eval/episode_easy_success_rate"])
+    )
+    strict_success_auc = OnlineNormalizedAUC(
+        initial_value=initial_strict_success
+    )
+    easy_success_auc = OnlineNormalizedAUC(
+        initial_value=initial_easy_success
+    )
+    task_adaptation = {
+        "task_index": task_index,
+        "env_id": args.env_id,
+        "forward_transfer/initial_success_rate": initial_strict_success,
+        "forward_transfer/initial_easy_success_rate": initial_easy_success,
+        "adaptation/final_success_rate": initial_strict_success,
+        "adaptation/final_easy_success_rate": initial_easy_success,
+        "adaptation/success_rate_auc": initial_strict_success,
+        "adaptation/easy_success_rate_auc": initial_easy_success,
+        "adaptation/budget_env_steps": int(args.num_timesteps),
+    }
+    print(
+        "Initial task performance before data collection: "
+        f"success={initial_strict_success:.6f}, "
+        f"easy_success={initial_easy_success:.6f}"
+    )
+    if args.track:
+        wandb.log({
+            "forward_transfer/initial_success_rate": (
+                initial_strict_success
+            ),
+            "forward_transfer/initial_easy_success_rate": (
+                initial_easy_success
+            ),
+            "training/env_steps": 0,
+        }, step=0)
     xt = time.time()
     metrics = None
 
@@ -1045,6 +1088,16 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             metrics["eval/episode_easy_success_rate_auc"] = (
                 easy_success_auc.update(env_steps, easy_success)
             )
+            task_adaptation.update({
+                "adaptation/final_success_rate": strict_success,
+                "adaptation/final_easy_success_rate": easy_success,
+                "adaptation/success_rate_auc": float(
+                    metrics["eval/episode_success_rate_auc"]
+                ),
+                "adaptation/easy_success_rate_auc": float(
+                    metrics["eval/episode_easy_success_rate_auc"]
+                ),
+            })
 
             video_path_file = None
             if args.record_videos and es % max(1, args.video_every_n_evals) == 0:
@@ -1189,8 +1242,29 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
                     f"are valid: {error}"
                 )
 
+    if args.save_checkpoint:
+        with open(f"{save_path}/task_adaptation.json", "w") as stream:
+            json.dump(task_adaptation, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+
     if args.track:
+        if wandb.run is not None:
+            for name, value in task_adaptation.items():
+                if name not in {"task_index", "env_id"}:
+                    wandb.run.summary[name] = value
         wandb.finish()
+
+    task_adaptation_history = (
+        list(carry.get("task_adaptation", ()))
+        if carry is not None
+        else []
+    )
+    while len(task_adaptation_history) < task_index:
+        task_adaptation_history.append(None)
+    if task_index < len(task_adaptation_history):
+        task_adaptation_history[task_index] = task_adaptation
+    else:
+        task_adaptation_history.append(task_adaptation)
 
     if args.critic_family == "vanilla":
         return {
@@ -1198,6 +1272,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
             "critic": training_state.critic_state.params,
             "task_index": task_index,
             "env_id": args.env_id,
+            "task_adaptation": task_adaptation_history,
         }
 
     task_bank = list(carry.get("task_bank", ())) if carry is not None else []
@@ -1220,6 +1295,7 @@ def main(args: Args, carry: dict | None = None, task_index: int = 0):
         "task_index": task_index,
         "env_id": args.env_id,
         "task_bank": task_bank,
+        "task_adaptation": task_adaptation_history,
     }
 
 if __name__ == "__main__":

@@ -50,6 +50,10 @@ class DiverseContinualConfigsTest(unittest.TestCase):
             self.assertEqual(persistent["actor_lifecycle"], "persistent")
             self.assertEqual(persistent["critic_lifecycle"], "persistent")
             self.assertEqual(dcc["runner"], "continual_dcc.py")
+            for cell in (reset, persistent, dcc):
+                self.assertFalse(cell["eval_next_task"])
+                self.assertFalse(cell["eval_previous_tasks"])
+                self.assertFalse(cell["report_retention_metrics"])
 
     def test_registry_cli(self):
         def output(*args):
@@ -101,6 +105,9 @@ class DiverseContinualConfigsTest(unittest.TestCase):
         self.assertIn("--task-data-version builderbench-de9130-direct-v1", output)
         self.assertIn("--max-cubes 8", output)
         self.assertIn("--pd-duration 5", output)
+        self.assertIn("--no-eval-next-task", output)
+        self.assertIn("--no-eval-previous-tasks", output)
+        self.assertIn("--no-report-retention-metrics", output)
         self.assertIn(SEQUENCE_A[0], output)
         self.assertIn(SEQUENCE_A[-1], output)
 

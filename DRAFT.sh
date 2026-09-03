@@ -100,6 +100,8 @@ RECORD_VIDEOS="${RECORD_VIDEOS:-false}"
 VISUALIZE_SAMPLES="${VISUALIZE_SAMPLES:-false}"
 RESUME="${RESUME:-true}"
 EVAL_NEXT_TASK="${EVAL_NEXT_TASK:-true}"
+EVAL_PREVIOUS_TASKS="${EVAL_PREVIOUS_TASKS:-true}"
+REPORT_RETENTION_METRICS="${REPORT_RETENTION_METRICS:-true}"
 LOG_CONTINUAL_EVAL="${LOG_CONTINUAL_EVAL:-true}"
 WANDB_EVAL_TABLES="${WANDB_EVAL_TABLES:-true}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-builderbench-stablecrl-dcc}"
@@ -310,6 +312,8 @@ for ((slot = 0; slot < SLOTS; slot++)); do
     )
     COMMAND+=("$(bool_flag resume "$RESUME")")
     COMMAND+=("$(bool_flag eval-next-task "$EVAL_NEXT_TASK")")
+    COMMAND+=("$(bool_flag eval-previous-tasks "$EVAL_PREVIOUS_TASKS")")
+    COMMAND+=("$(bool_flag report-retention-metrics "$REPORT_RETENTION_METRICS")")
     COMMAND+=("$(bool_flag log-continual-eval "$LOG_CONTINUAL_EVAL")")
     COMMAND+=("$(bool_flag wandb-eval-tables "$WANDB_EVAL_TABLES")")
   fi

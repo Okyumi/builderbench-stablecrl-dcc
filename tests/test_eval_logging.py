@@ -14,7 +14,7 @@ from continual.eval_logging import (
 )
 
 
-def row(phase, task, success, scope="seen"):
+def row(phase, task, success, scope="seen", **extra):
     return {
         "phase_index": phase,
         "eval_task_index": task,
@@ -28,6 +28,7 @@ def row(phase, task, success, scope="seen"):
         "eval/episode_easy_success_rate_std": 0.1,
         "eval/repeats": 5,
         "eval/num_episodes": 640,
+        **extra,
     }
 
 
@@ -52,6 +53,39 @@ class EvalLoggingTest(unittest.TestCase):
         self.assertEqual(scalars["continual/mean_seen_success_rate"], 0.625)
         self.assertEqual(scalars["continual/average_forgetting"], 0.5)
         self.assertEqual(scalars["continual/backward_transfer"], -0.5)
+
+    def test_task_adaptation_metrics_are_reported_without_retention(self):
+        rows = [
+            row(
+                1,
+                1,
+                0.75,
+                **{
+                    "forward_transfer/initial_success_rate": 0.25,
+                    "forward_transfer/initial_easy_success_rate": 0.5,
+                    "adaptation/final_success_rate": 0.75,
+                    "adaptation/final_easy_success_rate": 1.0,
+                    "adaptation/success_rate_auc": 0.6,
+                    "adaptation/easy_success_rate_auc": 0.8,
+                    "adaptation/budget_env_steps": 200,
+                },
+            )
+        ]
+        scalars = continual_scalars(
+            rows, phase_index=1, include_retention=False
+        )
+        self.assertEqual(
+            scalars[
+                "continual/task_01/forward_transfer/initial_success_rate"
+            ],
+            0.25,
+        )
+        self.assertEqual(
+            scalars["continual/task_01/adaptation/success_rate_auc"],
+            0.6,
+        )
+        self.assertNotIn("continual/average_forgetting", scalars)
+        self.assertNotIn("continual/backward_transfer", scalars)
 
     def test_run_id_is_stable_and_recipe_sensitive(self):
         first = continual_eval_run_id({"algorithm": "a", "seed": 5})

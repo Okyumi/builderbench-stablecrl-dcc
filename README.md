@@ -111,6 +111,21 @@ as done by the existing smoke launchers. For the full nine-cell comparison:
 sbatch --account=torch_pr_XXX_XXXXX DRAFT_DIVERSE_CONTINUAL.sh
 ```
 
+This track measures each task immediately after its real reset/transfer
+initialization, then uses that success value as the step-zero point of the
+task's normalized adaptation AUC. It does not evaluate old tasks or report
+forgetting. After the jobs finish, create the matched-seed forward-transfer
+and AUC comparison with:
+
+```bash
+python summarize_diverse_continual.py \
+  --checkpoint-root /scratch/$USER/builderbench-stablecrl-dcc/checkpoints/diverse_sequence_a
+```
+
+DCC has no dynamics prediction head or dynamics loss. It retains a fresh
+task-specific residual critic adapter; removing that adapter would turn the
+method into the persistent StableCRL baseline rather than DCC.
+
 See `docs/2026-09-03_continual_representation_and_paper_setup.md` for the
 representation and paper recommendation, and
 `docs/2026-09-03_diverse_builderbench_implementation.md` for task provenance,

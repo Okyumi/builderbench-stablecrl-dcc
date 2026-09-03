@@ -25,6 +25,7 @@ class ContinualCheckpointTest(unittest.TestCase):
             "stablecrl-dcc-flat-residual-no-dynamics-v3",
         )
         self.assertNotIn("dcc_dyn_weight", recipe)
+        self.assertNotIn("eval_previous_tasks", recipe)
         self.assertEqual(recipe["architecture"], "block")
         self.assertEqual(recipe["continual_eval_repeats"], 5)
         carry = {"value": np.array([1.0, 2.0], dtype=np.float32)}
@@ -54,6 +55,16 @@ class ContinualCheckpointTest(unittest.TestCase):
                     task_index=0,
                     recipe=changed,
                 )
+
+    def test_forward_only_measurement_is_part_of_checkpoint_recipe(self):
+        recipe = _checkpoint_recipe(Args(
+            eval_next_task=False,
+            eval_previous_tasks=False,
+            report_retention_metrics=False,
+        ))
+        self.assertFalse(recipe["eval_next_task"])
+        self.assertFalse(recipe["eval_previous_tasks"])
+        self.assertFalse(recipe["report_retention_metrics"])
 
 
 if __name__ == "__main__":

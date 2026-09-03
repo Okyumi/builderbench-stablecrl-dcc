@@ -14,6 +14,11 @@ from experiment_configs import SEEDS, _cell, _shell_value, validate_configs
 
 SEQUENCE_A_TASKS = ",".join(SEQUENCE_A)
 TASK_DATA_VERSION = "builderbench-de9130-direct-v1"
+FORWARD_TRANSFER_MEASUREMENT = {
+    "eval_next_task": False,
+    "eval_previous_tasks": False,
+    "report_retention_metrics": False,
+}
 STAGES = {
     "smoke": (0, 2),
     "sequence_a": (0, 8),
@@ -38,6 +43,7 @@ def build_configs() -> list[dict[str, Any]]:
                 max_cubes=8,
                 repetition_factor=12,
                 task_data_version=TASK_DATA_VERSION,
+                **FORWARD_TRANSFER_MEASUREMENT,
             ),
             _cell(
                 "stablecrl_persistent_persistent_diverse_sequence_a",
@@ -51,6 +57,7 @@ def build_configs() -> list[dict[str, Any]]:
                 max_cubes=8,
                 repetition_factor=12,
                 task_data_version=TASK_DATA_VERSION,
+                **FORWARD_TRANSFER_MEASUREMENT,
             ),
             _cell(
                 "dcc_residual_diverse_sequence_a",
@@ -63,6 +70,7 @@ def build_configs() -> list[dict[str, Any]]:
                 max_cubes=8,
                 repetition_factor=12,
                 task_data_version=TASK_DATA_VERSION,
+                **FORWARD_TRANSFER_MEASUREMENT,
             ),
         ])
     validate_configs(configs)

@@ -84,6 +84,11 @@ were not replaced.
 - seeds 5, 6, and 7 for each method;
 - CRTR repetition 12, semantic padding, `max_cubes=8`, and PD-5 throughout.
 
+The Sequence A cells are forward-transfer experiments. They do not re-evaluate
+old tasks or calculate forgetting. Each phase records the performance of its
+actual initialized policy before collecting new-task data, final performance,
+and normalized learning-curve AUC.
+
 List or inspect the cells with:
 
 ```bash

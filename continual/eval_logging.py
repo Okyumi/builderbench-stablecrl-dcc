@@ -18,6 +18,15 @@ _MATRIX_METRICS = (
 )
 _MATRIX_STD_METRICS = tuple(f"{metric}_std" for metric in _MATRIX_METRICS)
 _EVAL_COUNT_METRICS = ("eval/repeats", "eval/num_episodes")
+_ADAPTATION_METRICS = (
+    "forward_transfer/initial_success_rate",
+    "forward_transfer/initial_easy_success_rate",
+    "adaptation/final_success_rate",
+    "adaptation/final_easy_success_rate",
+    "adaptation/success_rate_auc",
+    "adaptation/easy_success_rate_auc",
+    "adaptation/budget_env_steps",
+)
 
 
 def read_eval_rows(path: Path) -> list[dict[str, Any]]:
@@ -103,7 +112,10 @@ def _seen_rows(
 
 
 def continual_scalars(
-    rows: Sequence[dict[str, Any]], phase_index: int
+    rows: Sequence[dict[str, Any]],
+    phase_index: int,
+    *,
+    include_retention: bool = True,
 ) -> dict[str, float | int]:
     """Compute standard CL scalars from the stored success matrix."""
     current = _seen_rows(rows, phase_index)
@@ -144,34 +156,35 @@ def continual_scalars(
         if row.get("eval_scope", "seen") == "seen"
         and int(row["phase_index"]) == int(row["eval_task_index"])
     }
-    forgetting = []
-    backward_transfer = []
-    for task_index, row in current_by_task.items():
-        value = _finite_metric(row, "eval/episode_success_rate")
-        if value is None:
-            continue
-        if task_index < phase_index:
-            history = [
-                _finite_metric(item, "eval/episode_success_rate")
-                for item in rows
-                if item.get("eval_scope", "seen") == "seen"
-                and int(item["eval_task_index"]) == task_index
-                and int(item["phase_index"]) <= phase_index
-            ]
-            history = [item for item in history if item is not None]
-            if history:
-                forgetting.append(max(history) - value)
-        reference = diagonal.get(task_index)
-        if task_index < phase_index and reference is not None:
-            backward_transfer.append(value - reference)
-    if forgetting:
-        payload["continual/average_forgetting"] = (
-            sum(forgetting) / len(forgetting)
-        )
-    if backward_transfer:
-        payload["continual/backward_transfer"] = (
-            sum(backward_transfer) / len(backward_transfer)
-        )
+    if include_retention:
+        forgetting = []
+        backward_transfer = []
+        for task_index, row in current_by_task.items():
+            value = _finite_metric(row, "eval/episode_success_rate")
+            if value is None:
+                continue
+            if task_index < phase_index:
+                history = [
+                    _finite_metric(item, "eval/episode_success_rate")
+                    for item in rows
+                    if item.get("eval_scope", "seen") == "seen"
+                    and int(item["eval_task_index"]) == task_index
+                    and int(item["phase_index"]) <= phase_index
+                ]
+                history = [item for item in history if item is not None]
+                if history:
+                    forgetting.append(max(history) - value)
+            reference = diagonal.get(task_index)
+            if task_index < phase_index and reference is not None:
+                backward_transfer.append(value - reference)
+        if forgetting:
+            payload["continual/average_forgetting"] = (
+                sum(forgetting) / len(forgetting)
+            )
+        if backward_transfer:
+            payload["continual/backward_transfer"] = (
+                sum(backward_transfer) / len(backward_transfer)
+            )
 
     next_rows = [
         row for row in rows
@@ -196,6 +209,13 @@ def continual_scalars(
                 payload[
                     f"continual/task_{task_index:02d}/{short_name}"
                 ] = value
+        if task_index == phase_index:
+            for metric in _ADAPTATION_METRICS:
+                value = _finite_metric(row, metric)
+                if value is not None:
+                    payload[
+                        f"continual/task_{task_index:02d}/{metric}"
+                    ] = value
     return payload
 
 
@@ -210,6 +230,7 @@ def _long_table_data(
         "train_task_global_id",
         "eval_task_global_id",
         *_EVAL_COUNT_METRICS,
+        *_ADAPTATION_METRICS,
         *(
             metric
             for pair in zip(_MATRIX_METRICS, _MATRIX_STD_METRICS)
@@ -223,6 +244,7 @@ def _long_table_data(
                 *_MATRIX_METRICS,
                 *_MATRIX_STD_METRICS,
                 *_EVAL_COUNT_METRICS,
+                *_ADAPTATION_METRICS,
             )
             else _finite_metric(row, column)
             for column in columns
@@ -304,7 +326,13 @@ def log_continual_eval_to_wandb(
         run.define_metric(
             "continual/*", step_metric="continual/phase_index"
         )
-        payload: dict[str, Any] = continual_scalars(rows, phase_index)
+        payload: dict[str, Any] = continual_scalars(
+            rows,
+            phase_index,
+            include_retention=bool(
+                getattr(args, "report_retention_metrics", True)
+            ),
+        )
         if log_tables:
             long_columns, long_data = _long_table_data(rows)
             success_columns, success_data = _matrix_table_data(

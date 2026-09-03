@@ -57,6 +57,8 @@ class Args(StableCRLArgs):
     resume: bool = True
     critic_family: Literal["dcc"] = "dcc"
     eval_next_task: bool = True
+    eval_previous_tasks: bool = True
+    report_retention_metrics: bool = True
     log_continual_eval: bool = True
     wandb_eval_tables: bool = True
     continual_eval_repeats: int = 5
@@ -147,10 +149,21 @@ def _checkpoint_recipe(args: Args) -> dict:
         "scale_critic_residual_by_depth",
         "use_non_residual_critic_encoders",
     )
-    return {
+    recipe = {
         "algorithm": "stablecrl-dcc-flat-residual-no-dynamics-v3",
         **{name: getattr(args, name) for name in names},
     }
+    if not (
+        args.eval_next_task
+        and args.eval_previous_tasks
+        and args.report_retention_metrics
+    ):
+        recipe.update({
+            "eval_next_task": args.eval_next_task,
+            "eval_previous_tasks": args.eval_previous_tasks,
+            "report_retention_metrics": args.report_retention_metrics,
+        })
+    return recipe
 
 
 def _save_boundary_checkpoint(
@@ -226,7 +239,11 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
     """Evaluate stored heads plus next-task zero-shot transfer."""
     results = []
     layout = SemanticLayout(max_cubes=args.max_cubes)
-    eval_indices = list(range(phase_index + 1))
+    eval_indices = (
+        list(range(phase_index + 1))
+        if args.eval_previous_tasks
+        else [phase_index]
+    )
     if args.eval_next_task and phase_index + 1 < len(records):
         eval_indices.append(phase_index + 1)
     for eval_index in eval_indices:
@@ -287,7 +304,7 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
             repeats=args.continual_eval_repeats,
             num_eval_envs=args.num_eval_envs,
         )
-        results.append({
+        row = {
             "phase_index": phase_index,
             "eval_task_index": eval_index,
             "eval_scope": (
@@ -300,7 +317,10 @@ def _evaluate_seen_tasks(args, records, carry, phase_index):
                 key: float(np.asarray(value))
                 for key, value in metrics.items()
             },
-        })
+        }
+        if eval_index == phase_index:
+            row.update(carry["task_adaptation"][phase_index])
+        results.append(row)
     return results
 
 

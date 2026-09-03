@@ -377,6 +377,15 @@ def validate_configs(configs: list[dict[str, Any]]) -> None:
             raise ValueError("repetition_factor must be positive")
         if int(config["continual_eval_repeats"]) < 1:
             raise ValueError("continual_eval_repeats must be positive")
+        for measurement_flag in (
+            "eval_next_task",
+            "eval_previous_tasks",
+            "report_retention_metrics",
+        ):
+            if measurement_flag in config and not isinstance(
+                config[measurement_flag], bool
+            ):
+                raise ValueError(f"{measurement_flag} must be boolean")
         if min(
             int(config["num_blocks"]),
             int(config["hidden_dim"]),

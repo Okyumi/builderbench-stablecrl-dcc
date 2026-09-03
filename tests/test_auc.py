@@ -10,6 +10,15 @@ class OnlineNormalizedAUCTest(unittest.TestCase):
         self.assertAlmostEqual(auc.update(10.0, 0.5), 0.25)
         self.assertAlmostEqual(auc.update(20.0, 1.0), 0.5)
 
+    def test_continual_auc_starts_from_measured_transfer_performance(self):
+        auc = OnlineNormalizedAUC(initial_value=0.4)
+        self.assertAlmostEqual(auc.update(10.0, 0.6), 0.5)
+        self.assertAlmostEqual(auc.update(20.0, 1.0), 0.65)
+
+    def test_initial_value_must_be_a_probability(self):
+        with self.assertRaisesRegex(ValueError, "initial value"):
+            OnlineNormalizedAUC(initial_value=1.1)
+
     def test_rejects_invalid_observations(self):
         auc = OnlineNormalizedAUC()
         with self.assertRaises(ValueError):
