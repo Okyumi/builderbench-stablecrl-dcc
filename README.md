@@ -82,6 +82,40 @@ flat residual architecture as the successful upstream StableCRL controls.
 Changing an algorithmic setting requires a fresh boundary-checkpoint
 directory. Resume checkpoints store and validate the full training recipe.
 
+### Diverse BuilderBench Sequence A
+
+The main diverse track keeps the StableCRL direct-cube simulator and PD-5,
+but uses original BuilderBench target structures instead of only increasing
+vertical stacks:
+
+```text
+place → lift → 2-stack → permute → T-stack → triangle packing
+      → 5-cube archway → 7-cube Jenga → 8-cube vertical portal
+```
+
+Every phase uses `max_cubes=8`: state size 120, goal size 32, and action size
+5 from the first task onward. Original BuilderBench goal masks distinguish
+required targets from real helper cubes.
+
+```bash
+python diverse_continual_experiment_configs.py --list
+DRY_RUN=true CONFIG_INDEX=2 RUN_TEST_PREFLIGHT=false \
+  bash DRAFT_DIVERSE_CONTINUAL.sh
+```
+
+For a short three-method GPU smoke run, set `EXPERIMENT_STAGE=smoke` and
+override `BASE_STEPS`, `STEPS_PER_TASK`, replay sizes, and evaluation counts
+as done by the existing smoke launchers. For the full nine-cell comparison:
+
+```bash
+sbatch --account=torch_pr_XXX_XXXXX DRAFT_DIVERSE_CONTINUAL.sh
+```
+
+See `docs/2026-09-03_continual_representation_and_paper_setup.md` for the
+representation and paper recommendation, and
+`docs/2026-09-03_diverse_builderbench_implementation.md` for task provenance,
+configuration, and validation details.
+
 The continual driver writes an immutable task manifest, atomic task-boundary
 checkpoints, seen-task and next-task evaluation rows in
 `checkpoints/continual_dcc/continual_eval.jsonl`, and lightweight success

@@ -106,20 +106,41 @@ class GroupedPadLayout:
         selector = packed[..., cursor:cursor + 1]
         return xp.concatenate([*groups, selector], axis=-1)
 
-    def pack_goal(self, raw: Any, num_cubes: int, *, xp=np) -> Any:
+    def pack_goal(
+        self, raw: Any, num_cubes: int, *, mask: Any | None = None, xp=np
+    ) -> Any:
         self.validate_num_cubes(num_cubes)
         expected = POSITION_DIM * num_cubes
         if raw.shape[-1] != expected:
             raise ValueError(
                 f"expected raw goal dim {expected}, got {raw.shape[-1]}"
             )
+        if mask is None:
+            valid = xp.ones(
+                raw.shape[:-1] + (num_cubes,), dtype=raw.dtype
+            )
+        else:
+            if mask.shape[-1] != num_cubes:
+                raise ValueError(
+                    f"expected goal mask dim {num_cubes}, got "
+                    f"{mask.shape[-1]}"
+                )
+            valid = xp.broadcast_to(
+                mask, raw.shape[:-1] + (num_cubes,)
+            ).astype(raw.dtype)
+        positions = raw.reshape(
+            raw.shape[:-1] + (num_cubes, POSITION_DIM)
+        )
+        masked_raw = (positions * valid[..., None]).reshape(
+            raw.shape[:-1] + (-1,)
+        )
         padding = xp.zeros(
             raw.shape[:-1] + (POSITION_DIM * (self.max_cubes - num_cubes),),
             dtype=raw.dtype,
         )
-        mask = xp.concatenate(
+        padded_mask = xp.concatenate(
             [
-                xp.ones(raw.shape[:-1] + (num_cubes,), dtype=raw.dtype),
+                valid,
                 xp.zeros(
                     raw.shape[:-1] + (self.max_cubes - num_cubes,),
                     dtype=raw.dtype,
@@ -127,7 +148,7 @@ class GroupedPadLayout:
             ],
             axis=-1,
         )
-        return xp.concatenate([raw, padding, mask], axis=-1)
+        return xp.concatenate([masked_raw, padding, padded_mask], axis=-1)
 
     def unpack_goal(self, packed: Any, num_cubes: int) -> Any:
         self.validate_num_cubes(num_cubes)

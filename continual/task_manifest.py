@@ -14,6 +14,9 @@ import numpy as np
 _CREATIVE_ID = re.compile(
     r"^(?:(?:sparse|truncated-reward)-)?creative-(\d+)-task(\d+)$"
 )
+_DIRECT_BUILDERBENCH_ID = re.compile(
+    r"^builderbench-direct-(\d+)-task(\d+)$"
+)
 
 
 def canonical_goal(goal: np.ndarray, grid_size: float = 0.04) -> np.ndarray:
@@ -48,6 +51,8 @@ class TaskRecord:
     global_id: str
     canonical_goal: tuple[tuple[int, int, int], ...]
     task_data_version: str
+    goal_mask: tuple[bool, ...] | None = None
+    goal_mask_hash: str | None = None
 
 
 def task_record(
@@ -56,8 +61,12 @@ def task_record(
     *,
     task_data_version: str,
     grid_size: float = 0.04,
+    goal_mask: np.ndarray | None = None,
 ) -> TaskRecord:
-    match = _CREATIVE_ID.fullmatch(env_id)
+    match = (
+        _CREATIVE_ID.fullmatch(env_id)
+        or _DIRECT_BUILDERBENCH_ID.fullmatch(env_id)
+    )
     if match is None:
         raise ValueError(f"unsupported continual task id: {env_id!r}")
     num_cubes, local_task_index = map(int, match.groups())
@@ -68,9 +77,20 @@ def task_record(
             f"{len(canonical)}"
         )
     digest = canonical_goal_hash(goal, grid_size=grid_size)
-    global_id = (
-        f"{task_data_version}:{num_cubes}:{local_task_index}:{digest}"
-    )
+    mask_tuple = None
+    mask_digest = None
+    if goal_mask is not None:
+        mask = np.asarray(goal_mask, dtype=bool)
+        if mask.shape != (num_cubes,):
+            raise ValueError(
+                f"{env_id} expected goal mask shape {(num_cubes,)}, "
+                f"got {mask.shape}"
+            )
+        mask_tuple = tuple(map(bool, mask))
+        mask_digest = hashlib.sha256(mask.tobytes()).hexdigest()[:16]
+    global_id = f"{task_data_version}:{num_cubes}:{local_task_index}:{digest}"
+    if mask_digest is not None:
+        global_id = f"{global_id}:{mask_digest}"
     return TaskRecord(
         env_id=env_id,
         num_cubes=num_cubes,
@@ -79,28 +99,42 @@ def task_record(
         global_id=global_id,
         canonical_goal=tuple(tuple(map(int, row)) for row in canonical),
         task_data_version=task_data_version,
+        goal_mask=mask_tuple,
+        goal_mask_hash=mask_digest,
     )
 
 
 def build_manifest(
-    tasks: Iterable[tuple[str, np.ndarray]],
+    tasks: Iterable[
+        tuple[str, np.ndarray] | tuple[str, np.ndarray, np.ndarray]
+    ],
     *,
     task_data_version: str,
     grid_size: float = 0.04,
 ) -> list[TaskRecord]:
-    records = [
-        task_record(
+    records = []
+    for task in tasks:
+        if len(task) == 2:
+            env_id, goal = task
+            goal_mask = None
+        elif len(task) == 3:
+            env_id, goal, goal_mask = task
+        else:
+            raise ValueError("task definitions must contain 2 or 3 items")
+        records.append(task_record(
             env_id,
             goal,
             task_data_version=task_data_version,
             grid_size=grid_size,
-        )
-        for env_id, goal in tasks
-    ]
+            goal_mask=goal_mask,
+        ))
     ids = [record.global_id for record in records]
     if len(ids) != len(set(ids)):
         raise ValueError("continual sequence contains duplicate task identities")
-    semantic_ids = [(record.num_cubes, record.goal_hash) for record in records]
+    semantic_ids = [
+        (record.num_cubes, record.goal_hash, record.goal_mask_hash)
+        for record in records
+    ]
     if len(semantic_ids) != len(set(semantic_ids)):
         raise ValueError("continual sequence contains duplicate semantic goals")
     return records
@@ -108,8 +142,18 @@ def build_manifest(
 
 def write_manifest(records: Sequence[TaskRecord], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    tasks = []
+    for record in records:
+        item = asdict(record)
+        if record.goal_mask is None:
+            # Keep schema-1 manifests for existing creative tasks unchanged.
+            item.pop("goal_mask")
+            item.pop("goal_mask_hash")
+        tasks.append(item)
     payload = {
-        "schema_version": 1,
-        "tasks": [asdict(record) for record in records],
+        "schema_version": (
+            2 if any(record.goal_mask is not None for record in records) else 1
+        ),
+        "tasks": tasks,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")

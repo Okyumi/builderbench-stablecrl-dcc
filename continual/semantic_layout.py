@@ -20,9 +20,11 @@ The fourteenth per-cube feature is a one-hot flag for the previously selected
 cube. Keeping selection attached to the cube avoids changing the meaning of
 the raw index-valued scalar when the number of valid cubes changes.
 
-Goals use ``[positions(3M), valid_mask(M)]``. ``delta_control=True`` adds a
-per-cube control field to the upstream observation and is deliberately
-rejected until it has a separately versioned layout.
+Goals use ``[positions(3M), goal_mask(M)]``.  The goal mask normally matches
+the validity mask, but can be zero for a real helper cube whose final position
+is deliberately unspecified. ``delta_control=True`` adds a per-cube control
+field to the upstream observation and is deliberately rejected until it has a
+separately versioned layout.
 """
 from __future__ import annotations
 
@@ -165,20 +167,43 @@ class SemanticLayout:
         select_action = xp.sum(selected * centers, axis=-1, keepdims=True)
         return xp.concatenate([*groups, select_action], axis=-1)
 
-    def pack_goal(self, raw: Any, num_cubes: int, *, xp=np) -> Any:
+    def pack_goal(
+        self, raw: Any, num_cubes: int, *, mask: Any | None = None, xp=np
+    ) -> Any:
         self.validate_num_cubes(num_cubes)
         expected = POSITION_DIM * num_cubes
         if raw.shape[-1] != expected:
             raise ValueError(
                 f"expected raw goal dim {expected}, got {raw.shape[-1]}"
             )
+        if mask is None:
+            valid = xp.ones(
+                raw.shape[:-1] + (num_cubes,), dtype=raw.dtype
+            )
+        else:
+            if mask.shape[-1] != num_cubes:
+                raise ValueError(
+                    f"expected goal mask dim {num_cubes}, got "
+                    f"{mask.shape[-1]}"
+                )
+            valid = xp.broadcast_to(
+                mask, raw.shape[:-1] + (num_cubes,)
+            ).astype(raw.dtype)
+        positions = raw.reshape(
+            raw.shape[:-1] + (num_cubes, POSITION_DIM)
+        )
+        # Hard-zero unspecified helper targets so flat encoders cannot use
+        # their arbitrary coordinates even if they fail to learn the mask.
+        masked_raw = (positions * valid[..., None]).reshape(
+            raw.shape[:-1] + (-1,)
+        )
         pad = xp.zeros(
             raw.shape[:-1] + (POSITION_DIM * (self.max_cubes - num_cubes),),
             dtype=raw.dtype,
         )
-        mask = xp.concatenate(
+        padded_mask = xp.concatenate(
             [
-                xp.ones(raw.shape[:-1] + (num_cubes,), dtype=raw.dtype),
+                valid,
                 xp.zeros(
                     raw.shape[:-1] + (self.max_cubes - num_cubes,),
                     dtype=raw.dtype,
@@ -186,7 +211,7 @@ class SemanticLayout:
             ],
             axis=-1,
         )
-        return xp.concatenate([raw, pad, mask], axis=-1)
+        return xp.concatenate([masked_raw, pad, padded_mask], axis=-1)
 
     def unpack_goal(self, packed: Any, num_cubes: int) -> Any:
         self.validate_num_cubes(num_cubes)

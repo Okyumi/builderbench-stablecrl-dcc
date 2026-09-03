@@ -35,9 +35,9 @@ from continual.task_manifest import build_manifest, write_manifest
 from continual.vanilla_networks import make_vanilla_crl_networks
 from continual_dcc import (
     _checkpoint_path,
-    _goal_for_env_id,
     _resume_prefix,
     _save_boundary_checkpoint,
+    _task_for_env_id,
 )
 from stable_crl_dcc import Args as StableCRLArgs
 from stable_crl_dcc import make_inference_fn
@@ -257,7 +257,14 @@ def main(args: Args) -> None:
     task_ids = [item.strip() for item in args.task_sequence.split(",")]
     if not task_ids or any(not item for item in task_ids):
         raise ValueError("task_sequence must contain comma-separated task ids")
-    tasks = [(env_id, _goal_for_env_id(env_id)) for env_id in task_ids]
+    tasks = []
+    for env_id in task_ids:
+        goal, goal_mask = _task_for_env_id(env_id)
+        tasks.append(
+            (env_id, goal)
+            if goal_mask is None
+            else (env_id, goal, goal_mask)
+        )
     records = build_manifest(
         tasks, task_data_version=args.task_data_version
     )

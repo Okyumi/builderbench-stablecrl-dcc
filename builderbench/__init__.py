@@ -1,3 +1,6 @@
-from builderbench.mjx_warp_compat import apply_mjx_warp_compat
+"""BuilderBench package.
 
-apply_mjx_warp_compat()
+Simulator modules apply their MJX/Warp compatibility patch when imported.
+Keeping package initialization dependency-free lets task catalogs and
+experiment registries run in lightweight environments.
+"""

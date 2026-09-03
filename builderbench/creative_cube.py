@@ -29,6 +29,7 @@ def default_config() -> config_dict.ConfigDict:
         delta_control=False,
         episode_length=150,
         task_id=0,
+        direct_builderbench_task="",
         reward_sensitivity=5.0,
         success_threshold=0.02,
         easy_success_threshold=0.05,
@@ -184,10 +185,31 @@ class CreativeCube():
         self._ctrl_median = (self._ctrl_bounds[1] + self._ctrl_bounds[0]) / 2
         self._ctrl_halfspan = (self._ctrl_bounds[1] - self._ctrl_bounds[0]) / 2
 
-        # get task data
-        task_data = np.load( epath.Path(__file__).resolve().parent / f'tasks/creative-{config.num_cubes}.npz')
-        self._starts_data = jnp.array( task_data['starts'][config.task_id] )
-        self._target_goal_data = jnp.array( task_data['goals'][config.task_id] )
+        # Get task data.  The original StableCRL files contain relative goals
+        # that are randomly translated at reset.  Direct BuilderBench tasks
+        # retain the source starts, targets, and masks (up to one rigid
+        # workspace translation) and therefore use absolute goals.
+        if config.direct_builderbench_task:
+            from builderbench.task_catalog import get_direct_builder_task
+
+            task = get_direct_builder_task(config.direct_builderbench_task)
+            self._starts_data = jnp.asarray(task.start_bounds)
+            self._target_goal_data = jnp.asarray(task.goals)
+            self._goal_mask_data = jnp.asarray(task.goal_mask)
+            self._absolute_target_goal = True
+        else:
+            task_data = np.load(
+                epath.Path(__file__).resolve().parent
+                / f'tasks/creative-{config.num_cubes}.npz'
+            )
+            self._starts_data = jnp.array(task_data['starts'][config.task_id])
+            self._target_goal_data = jnp.array(
+                task_data['goals'][config.task_id]
+            )
+            self._goal_mask_data = jnp.ones(
+                (config.num_cubes,), dtype=bool
+            )
+            self._absolute_target_goal = False
 
     def _add_objects(self, spec, num_cubes):
         object_names = []
@@ -299,7 +321,18 @@ class CreativeCube():
     def reset(self, rng: jax.Array):
         rng, rng_box, rng_target, rng_starts, rng_select_action = jax.random.split(rng, 5)
 
-        _starts_data = jax.random.permutation(rng_starts, self._starts_data, axis=0)
+        permutation = jax.random.permutation(
+            rng_starts, jnp.arange(self._config.num_cubes)
+        )
+        _starts_data = self._starts_data[permutation]
+        if self._absolute_target_goal:
+            _target_goal_data = self._target_goal_data[permutation]
+            goal_mask = self._goal_mask_data[permutation]
+        else:
+            # Preserve the original StableCRL reset behavior exactly: only
+            # start bounds are shuffled; relative target slots stay fixed.
+            _target_goal_data = self._target_goal_data
+            goal_mask = self._goal_mask_data
 
         object_pos = (
             jax.random.uniform(
@@ -313,15 +346,16 @@ class CreativeCube():
         object_pos = object_pos.reshape(-1)
         object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1)).reshape(-1)
 
-        target_pos = (
-            jax.random.uniform(
+        if self._absolute_target_goal:
+            target_object_pos = _target_goal_data
+        else:
+            target_pos = jax.random.uniform(
                 rng_target,
                 (1, 3),
                 minval=self._target_sampling_bounds[0],
                 maxval=self._target_sampling_bounds[1],
             )
-        )
-        target_object_pos = ( target_pos + self._target_goal_data )
+            target_object_pos = target_pos + _target_goal_data
         target_object_quat = jnp.tile(jnp.array([1,0,0,0], dtype=jnp.float32), (self._config.num_cubes, 1))
 
         # set initial object position
@@ -347,9 +381,17 @@ class CreativeCube():
             njmax=self._config.njmax,
         )
 
+        # Hide target markers for helper cubes while retaining their source
+        # coordinates in target_goal for provenance and fixed-shape storage.
+        visible_target_pos = jnp.where(
+            goal_mask[:, None],
+            target_object_pos,
+            jnp.full_like(target_object_pos, 10.0),
+        )
+
         # set target mocap pos and quat
         data = data.replace(
-            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(target_object_pos),
+            mocap_pos=data.mocap_pos.at[self._mocap_targets].set(visible_target_pos),
             mocap_quat=data.mocap_quat.at[self._mocap_targets].set(target_object_quat),
         )
 
@@ -366,9 +408,11 @@ class CreativeCube():
             "select_action": jax.random.uniform(rng_select_action, minval=-1, maxval=1),
             "achieved_goal": achieved_goal,
             "target_goal": target_object_pos.reshape(-1),
-            "target_mocap_pos": target_object_pos,
+            "target_mocap_pos": visible_target_pos,
             "target_mocap_quat": target_object_quat,
         }
+        if self._absolute_target_goal:
+            info["goal_mask"] = goal_mask
 
         # calculate observation
         obs = self.get_obs(data, info)[0]
@@ -429,24 +473,49 @@ class CreativeCube():
 
         target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
 
+        goal_mask = info.get(
+            "goal_mask",
+            jnp.ones((self._config.num_cubes,), dtype=bool),
+        )
         obj_target_pos_squared_pairwise_err = jnp.sum( (achieved_goal[None, :, :] - target_goal[:, None, :]) ** 2, axis=-1)
-        cube_ids, target_ids = optax.assignment.hungarian_algorithm( obj_target_pos_squared_pairwise_err )
-        obj_target_pos_err = jnp.sqrt( obj_target_pos_squared_pairwise_err[cube_ids, target_ids] )
+        # Masked target rows get zero assignment cost, so they absorb any
+        # unused helper cubes without competing with required targets.
+        assignment_cost = jnp.where(
+            goal_mask[:, None], obj_target_pos_squared_pairwise_err, 0.0
+        )
+        target_ids, cube_ids = optax.assignment.hungarian_algorithm(
+            assignment_cost
+        )
+        obj_target_pos_err = jnp.sqrt(
+            obj_target_pos_squared_pairwise_err[target_ids, cube_ids]
+        )
+        assigned_mask = goal_mask[target_ids]
 
         obj_lifted = jnp.sum( obj_pos[:, 2] > 0.05 ).astype(float)
         obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
         
-        reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err))
+        reward = jnp.sum(
+            assigned_mask
+            * (1 - jnp.tanh(
+                self._config.reward_sensitivity * obj_target_pos_err
+            ))
+        )
 
-        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
-        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        success = jnp.all(
+            (~assigned_mask)
+            | (obj_target_pos_err < self._config.success_threshold)
+        ).astype(float)
+        easy_success = jnp.all(
+            (~assigned_mask)
+            | (obj_target_pos_err < self._config.easy_success_threshold)
+        ).astype(float)
 
         reward_info = {
             "success": success,
             "easy_success":  easy_success,
             "obj_lifted": obj_lifted,
             "obj_moved": obj_moved,
-            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+            "obj_goal_dist": jnp.sum(assigned_mask * obj_target_pos_err),
         }
 
         return reward, reward_info
@@ -458,22 +527,37 @@ class CreativeCube():
 
         target_goal = info["target_goal"].reshape((self._config.num_cubes, -1))
             
+        goal_mask = info.get(
+            "goal_mask",
+            jnp.ones((self._config.num_cubes,), dtype=bool),
+        )
         obj_target_pos_err = jnp.linalg.norm(target_goal - achieved_goal, axis=-1)
 
         obj_lifted = jnp.sum( obj_pos[:, 2] > 0.05 ).astype(float)
         obj_moved = jnp.any( obj_linvel > 0.001 ).astype(float)
         
-        reward = jnp.sum(1 - jnp.tanh(self._config.reward_sensitivity * obj_target_pos_err))
+        reward = jnp.sum(
+            goal_mask
+            * (1 - jnp.tanh(
+                self._config.reward_sensitivity * obj_target_pos_err
+            ))
+        )
 
-        success = jnp.all(obj_target_pos_err < self._config.success_threshold).astype(float)
-        easy_success = jnp.all(obj_target_pos_err < self._config.easy_success_threshold).astype(float)
+        success = jnp.all(
+            (~goal_mask)
+            | (obj_target_pos_err < self._config.success_threshold)
+        ).astype(float)
+        easy_success = jnp.all(
+            (~goal_mask)
+            | (obj_target_pos_err < self._config.easy_success_threshold)
+        ).astype(float)
 
         reward_info = {
             "success": success,
             "easy_success":  easy_success,
             "obj_lifted": obj_lifted,
             "obj_moved": obj_moved,
-            "obj_goal_dist": jnp.sum( obj_target_pos_err ),
+            "obj_goal_dist": jnp.sum(goal_mask * obj_target_pos_err),
         }
 
         return reward, reward_info

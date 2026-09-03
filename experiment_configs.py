@@ -37,7 +37,9 @@ STAGES = {
     "protocol": (60, 71),
     "legacy_all": (0, 35),
 }
-_TASK_ID = re.compile(r"^creative-(\d+)-task(\d+)$")
+_TASK_ID = re.compile(
+    r"^(?:creative|builderbench-direct)-(\d+)-task(\d+)$"
+)
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 
 

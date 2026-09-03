@@ -32,11 +32,21 @@ class GroupedPadWrapper(Wrapper):
 
     def _pack_state(self, state):
         info = dict(state.info)
+        goal_mask = info.get(
+            "goal_mask",
+            jnp.ones((self.num_cubes,), dtype=bool),
+        )
         info["achieved_goal"] = self.layout.pack_goal(
-            info["achieved_goal"], self.num_cubes, xp=jnp
+            info["achieved_goal"],
+            self.num_cubes,
+            mask=goal_mask,
+            xp=jnp,
         )
         info["target_goal"] = self.layout.pack_goal(
-            info["target_goal"], self.num_cubes, xp=jnp
+            info["target_goal"],
+            self.num_cubes,
+            mask=goal_mask,
+            xp=jnp,
         )
         return state.replace(
             obs=self.layout.pack_observation(

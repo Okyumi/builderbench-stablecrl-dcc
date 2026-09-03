@@ -40,6 +40,7 @@ from utils.wrapper import PDWrapper, wrap_env
 
 
 _TASK_ID = re.compile(r"^creative-(\d+)-task(\d+)$")
+_DIRECT_TASK_ID = re.compile(r"^builderbench-direct-(\d+)-task(\d+)$")
 
 
 @dataclass
@@ -61,11 +62,20 @@ class Args(StableCRLArgs):
     continual_eval_repeats: int = 5
 
 
-def _goal_for_env_id(env_id: str) -> np.ndarray:
+def _task_for_env_id(
+    env_id: str,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    if _DIRECT_TASK_ID.fullmatch(env_id):
+        from builderbench.task_catalog import get_direct_builder_task
+
+        task = get_direct_builder_task(env_id)
+        return task.goals, task.goal_mask
+
     match = _TASK_ID.fullmatch(env_id)
     if match is None:
         raise ValueError(
-            "continual_dcc currently supports creative-N-taskM ids; "
+            "continual_dcc supports creative-N-taskM and "
+            "builderbench-direct-N-taskM ids; "
             f"got {env_id!r}"
         )
     num_cubes, one_based_task = map(int, match.groups())
@@ -80,7 +90,12 @@ def _goal_for_env_id(env_id: str) -> np.ndarray:
             f"{env_id} selects task {one_based_task}, but {path.name} has "
             f"{len(goals)} task(s)"
         )
-    return goals[index]
+    return goals[index], None
+
+
+def _goal_for_env_id(env_id: str) -> np.ndarray:
+    """Return the unpadded goal for manifest and compatibility callers."""
+    return _task_for_env_id(env_id)[0]
 
 
 def _checkpoint_path(directory: Path, task_index: int) -> Path:
@@ -295,7 +310,14 @@ def main(args: Args) -> None:
     task_ids = [item.strip() for item in args.task_sequence.split(",")]
     if not task_ids or any(not item for item in task_ids):
         raise ValueError("task_sequence must contain comma-separated task ids")
-    tasks = [(env_id, _goal_for_env_id(env_id)) for env_id in task_ids]
+    tasks = []
+    for env_id in task_ids:
+        goal, goal_mask = _task_for_env_id(env_id)
+        tasks.append(
+            (env_id, goal)
+            if goal_mask is None
+            else (env_id, goal, goal_mask)
+        )
     records = build_manifest(
         tasks, task_data_version=args.task_data_version
     )

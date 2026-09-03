@@ -69,7 +69,23 @@ def mjx_step_data(
 
 def make_env(args):
 	# Initialize environment
-	if re.fullmatch(r"creative-\d+-task\d+", args.env_id):
+	if re.fullmatch(r"builderbench-direct-\d+-task\d+", args.env_id):
+		from builderbench.creative_cube import CreativeCube, default_config
+		from builderbench.task_catalog import get_direct_builder_task
+
+		task = get_direct_builder_task(args.env_id)
+		num_cubes = task.num_cubes
+		env_class = CreativeCube
+		default_config = default_config()
+		default_config.num_cubes = num_cubes
+		default_config.task_id = task.source_task_id - 1
+		default_config.direct_builderbench_task = args.env_id
+		default_config.permutation_invariant_reward = (
+			args.permutation_invariant_reward and not task.ordered_reward
+		)
+		episode_length = 100 + num_cubes * 50
+
+	elif re.fullmatch(r"creative-\d+-task\d+", args.env_id):
 		num_cubes = int( re.search(r"creative-(\d+)", args.env_id).group(1))
 		task_id = int( re.search(r"task(\d+)", args.env_id).group(1)) - 1
 
@@ -184,8 +200,16 @@ def make_env(args):
 		raise ValueError(f"Environment {args.env_id} not supported")
 
 	default_config.episode_length = args.env_episode_length if args.env_episode_length is not None else episode_length
-	default_config.sim_dt, default_config.ctrl_dt = _TIME_STEPS[args.env_id]
+	creative_reference = f"creative-{default_config.num_cubes}-task1"
+	default_config.sim_dt, default_config.ctrl_dt = _TIME_STEPS.get(
+		args.env_id, _TIME_STEPS[creative_reference]
+	)
 	default_config.env_early_termination = args.env_early_termination
-	default_config.permutation_invariant_reward = args.permutation_invariant_reward
-	default_config.nconmax, default_config.njmax = _MJX_PARAMS[args.env_id][0] * args.num_envs, _MJX_PARAMS[args.env_id][1] 
+	if not getattr(default_config, "direct_builderbench_task", ""):
+		default_config.permutation_invariant_reward = args.permutation_invariant_reward
+	physics_params = _MJX_PARAMS.get(
+		args.env_id, _MJX_PARAMS[creative_reference]
+	)
+	default_config.nconmax = physics_params[0] * args.num_envs
+	default_config.njmax = physics_params[1]
 	return env_class, default_config
