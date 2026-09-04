@@ -192,7 +192,15 @@ setup_environment
 
 if [ "$RUN_TEST_PREFLIGHT" = "true" ] && [ "$DRY_RUN" != "true" ]; then
   echo "Running repository test preflight before launching experiments."
-  "$PYTHON_BIN" -m unittest discover -s "$REPO_DIR/tests" -p 'test_*.py'
+  # Wrapper-specific experiment settings must not leak into launcher tests.
+  # Each nested launcher should exercise its own defaults.
+  env \
+    -u EVAL_NEXT_TASK \
+    -u EVAL_PREVIOUS_TASKS \
+    -u REPORT_RETENTION_METRICS \
+    -u TASK_DATA_VERSION \
+    -u RUN_NAMESPACE \
+    "$PYTHON_BIN" -m unittest discover -s "$REPO_DIR/tests" -p 'test_*.py'
 fi
 
 TOTAL_CONFIGS="$($PYTHON_BIN "$CONFIG_REGISTRY_PATH" --total)"
